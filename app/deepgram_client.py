@@ -35,8 +35,7 @@ class DeepgramAgentClient:
         logger.info("Deepgram agent connected, settings sent for shop=%s", self._shop.slug)
 
         self._keepalive_task = asyncio.create_task(self._keepalive_loop())
-
-def _build_settings(self) -> dict:
+    def _build_settings(self) -> dict:
         return {
             "type": "Settings",
             "audio": {
