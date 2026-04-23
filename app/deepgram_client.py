@@ -71,7 +71,6 @@ class DeepgramAgentClient:
                             "name": "end_call",
                             "description": "End the phone call after the caller says goodbye or the conversation is complete.",
                             "parameters": {"type": "object", "properties": {}},
-                            "client_side": True,
                         },
                     ],
                 },
