@@ -70,7 +70,20 @@ class DeepgramAgentClient:
                         {
                             "name": "end_call",
                             "description": "End the phone call after the caller says goodbye or the conversation is complete.",
-                            "parameters": {"type": "object", "properties": {}},
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "caller_confirmed_done": {
+                                        "type": "boolean",
+                                        "description": "Set to true ONLY if the caller has explicitly confirmed they have no further questions. Set to false otherwise.",
+                                    },
+                                    "reason": {
+                                        "type": "string",
+                                        "description": "Brief reason (e.g., 'caller confirmed done', 'escalation to owner')",
+                                    },
+                                },
+                                "required": ["caller_confirmed_done", "reason"],
+                            },
                         },
                     ],
                 },

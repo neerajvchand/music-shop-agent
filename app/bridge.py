@@ -203,7 +203,25 @@ async def _deepgram_to_twilio(
                 client_side = fn.get("client_side", False)
 
                 if fn_name == "end_call" and client_side:
-                    logger.info("end_call function requested, initiating hangup")
+                    # Parse arguments and check confirmation
+                    confirmed = False
+                    reason = ""
+                    try:
+                        args = json.loads(fn.get("arguments", "{}"))
+                        confirmed = args.get("caller_confirmed_done", False)
+                        reason = args.get("reason", "")
+                    except (json.JSONDecodeError, TypeError):
+                        logger.warning("end_call: failed to parse arguments")
+
+                    if not confirmed:
+                        logger.warning(
+                            "end_call called without confirmation (reason=%r), ignoring",
+                            reason,
+                        )
+                        await deepgram.send_function_call_response(fn_id, "end_call", "ignored")
+                        continue
+
+                    logger.info("end_call confirmed (reason=%r), initiating hangup", reason)
                     await deepgram.send_function_call_response(fn_id, "end_call", "ok")
                     await deepgram.inject_goodbye(shop.farewell)
                     end_call_event.set()
