@@ -196,18 +196,20 @@ async def _deepgram_to_twilio(
             transcript_parts.append(f"{role}: {content}")
 
         elif event_type == "FunctionCallRequest":
-            fn_name = event.get("function_name", "unknown")
-            fn_id = event.get("function_call_id", "")
+            for fn in event.get("functions", []):
+                fn_name = fn.get("name", "unknown")
+                fn_id = fn.get("id", "")
+                client_side = fn.get("client_side", False)
 
-            if fn_name == "end_call":
-                logger.info("end_call function requested, initiating hangup")
-                await deepgram.send_function_call_response(fn_id, "end_call", "ok")
-                end_call_event.set()
-                return
-            else:
-                logger.warning(
-                    "Unhandled FunctionCallRequest: %s", fn_name
-                )
+                if fn_name == "end_call" and client_side:
+                    logger.info("end_call function requested, initiating hangup")
+                    await deepgram.send_function_call_response(fn_id, "end_call", "ok")
+                    end_call_event.set()
+                    return
+                else:
+                    logger.warning(
+                        "Unhandled FunctionCallRequest: %s (client_side=%s)", fn_name, client_side
+                    )
 
         elif event_type in ("Error", "Warning"):
             logger.warning("Deepgram %s: %s", event_type, event.get("message", event))
