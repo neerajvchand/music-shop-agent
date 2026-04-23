@@ -18,6 +18,7 @@ class Shop(BaseModel):
     timezone: str
     locale: str
     greeting: str
+    farewell: str = "Thank you for calling. Have a wonderful day!"
     system_prompt: str
     voice_id: str
     llm_provider: str

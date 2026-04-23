@@ -107,12 +107,12 @@ class DeepgramAgentClient:
         except websockets.exceptions.ConnectionClosed as e:
             logger.info("Deepgram WebSocket closed: %s", e)
 
-    async def inject_goodbye(self) -> None:
+    async def inject_goodbye(self, message: str | None = None) -> None:
         """Inject a goodbye message for the agent to speak."""
         if self._ws:
             msg = {
                 "type": "InjectAgentMessage",
-                "content": "I'm sorry, but we've reached the maximum call duration. Thank you for calling, goodbye!",
+                "content": message or "I'm sorry, but we've reached the maximum call duration. Thank you for calling, goodbye!",
             }
             await self._ws.send(json.dumps(msg))
 

@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 MAX_CALL_DURATION = 300  # 5 minutes
 SILENCE_TIMEOUT = 30  # seconds of silence before auto-goodbye
-GOODBYE_DRAIN_MS = 1500  # ms to let final TTS play before closing
+GOODBYE_DRAIN_MS = 4500  # ms to let final TTS play before closing
 
 
 class SilenceTracker:
@@ -72,7 +72,7 @@ async def run_bridge(twilio_ws: WebSocket) -> None:
             _twilio_to_deepgram(twilio_ws, deepgram, silence_tracker)
         )
         deepgram_task = asyncio.create_task(
-            _deepgram_to_twilio(deepgram, twilio_ws, stream_sid, transcript_parts, end_call_event, silence_tracker)
+            _deepgram_to_twilio(deepgram, twilio_ws, stream_sid, transcript_parts, end_call_event, silence_tracker, shop)
         )
         timeout_task = asyncio.create_task(
             _call_timeout(MAX_CALL_DURATION, twilio_ws, deepgram, stream_sid)
@@ -175,6 +175,7 @@ async def _deepgram_to_twilio(
     transcript_parts: list[str],
     end_call_event: asyncio.Event,
     silence_tracker: SilenceTracker,
+    shop: Shop,
 ) -> None:
     """Handle events from Deepgram and forward audio to Twilio."""
     async for event in deepgram.receive_events():
@@ -204,6 +205,7 @@ async def _deepgram_to_twilio(
                 if fn_name == "end_call" and client_side:
                     logger.info("end_call function requested, initiating hangup")
                     await deepgram.send_function_call_response(fn_id, "end_call", "ok")
+                    await deepgram.inject_goodbye(shop.farewell)
                     end_call_event.set()
                     return
                 else:
