@@ -50,16 +50,7 @@ async def twilio_voice(request: Request):
 
 
 @app.websocket("/twilio/ws")
-async def twilio_websocket(websocket: WebSocket, shop: str = ""):
-    if not shop:
-        logger.warning("WebSocket connection without shop param")
-        await websocket.close(code=1008)
-        return
-
-    shop_config = await get_shop_by_slug(shop)
-    if not shop_config:
-        logger.warning("WebSocket connection for unknown shop: %s", shop)
-        await websocket.close(code=1008)
-        return
-
-    await run_bridge(websocket, shop_config)
+async def twilio_websocket(websocket: WebSocket):
+    # Shop slug arrives in Twilio's start event customParameters, not as a query param.
+    # run_bridge handles accepting the connection and resolving the shop.
+    await run_bridge(websocket)

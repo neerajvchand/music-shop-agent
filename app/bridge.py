@@ -20,20 +20,29 @@ logger = logging.getLogger(__name__)
 MAX_CALL_DURATION = 300  # 5 minutes
 
 
-async def run_bridge(twilio_ws: WebSocket, shop: Shop) -> None:
+async def run_bridge(twilio_ws: WebSocket) -> None:
     """Bridge audio between Twilio and Deepgram for a single call."""
     await twilio_ws.accept()
 
     stream_sid: str | None = None
     call_sid: str | None = None
     caller_phone: str | None = None
+    shop: Shop | None = None
     transcript_parts: list[str] = []
     started_at = datetime.now(timezone.utc)
     deepgram: DeepgramAgentClient | None = None
 
     try:
-        # Wait for Twilio start event to get streamSid
-        stream_sid, call_sid, caller_phone = await _wait_for_start(twilio_ws)
+        # Wait for Twilio start event — returns streamSid, callSid, caller phone, and shop slug
+        stream_sid, call_sid, caller_phone, shop_slug = await _wait_for_start(twilio_ws)
+
+        # Resolve shop from custom parameter
+        from app.shops import get_shop_by_slug
+        shop = await get_shop_by_slug(shop_slug) if shop_slug else None
+        if not shop:
+            logger.warning("No shop resolved from start event (slug=%r), closing", shop_slug)
+            return
+
         logger.info("Bridge started: stream=%s call=%s shop=%s", stream_sid, call_sid, shop.slug)
 
         # Connect to Deepgram
@@ -84,30 +93,34 @@ async def run_bridge(twilio_ws: WebSocket, shop: Shop) -> None:
             pass
 
         # Log the call
-        try:
-            await log_call(
-                shop_id=shop.id,
-                twilio_call_sid=call_sid,
-                started_at=started_at,
-                ended_at=ended_at,
-                transcript=transcript,
-                caller_phone=caller_phone,
-            )
-        except Exception as e:
-            logger.error("Failed to log call: %s", e)
+# Log the call (only if we resolved a shop)
+        if shop is not None:
+            try:
+                await log_call(
+                    shop_id=shop.id,
+                    twilio_call_sid=call_sid,
+                    started_at=started_at,
+                    ended_at=ended_at,
+                    transcript=transcript,
+                    caller_phone=caller_phone,
+                )
+            except Exception as e:
+                logger.error("Failed to log call: %s", e)
 
 
-async def _wait_for_start(twilio_ws: WebSocket) -> tuple[str, str | None, str | None]:
-    """Wait for the Twilio 'start' event and return (streamSid, callSid, callerPhone)."""
+async def _wait_for_start(twilio_ws: WebSocket) -> tuple[str, str | None, str | None, str | None]:
+    """Wait for the Twilio 'start' event and return (streamSid, callSid, callerPhone, shopSlug)."""
     while True:
         raw = await twilio_ws.receive_text()
         msg = json.loads(raw)
         if msg.get("event") == "start":
             start = msg["start"]
+            custom = start.get("customParameters", {}) or {}
             return (
                 start["streamSid"],
                 start.get("callSid"),
-                start.get("customParameters", {}).get("From"),
+                custom.get("From"),
+                custom.get("shop"),
             )
 
 

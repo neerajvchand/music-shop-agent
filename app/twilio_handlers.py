@@ -40,14 +40,16 @@ async def handle_voice_webhook(request: Request) -> Response:
     if parsed.port:
         ws_host = f"{ws_host}:{parsed.port}"
 
-    stream_url = f"wss://{ws_host}/twilio/ws?shop={shop.slug}"
+    stream_url = f"wss://{ws_host}/twilio/ws"
 
     twiml = (
         '<?xml version="1.0" encoding="UTF-8"?>'
         "<Response>"
         f"<Say>{CONSENT_DISCLOSURE}</Say>"
         "<Connect>"
-        f'<Stream url="{stream_url}"/>'
+        f'<Stream url="{stream_url}">'
+        f'<Parameter name="shop" value="{shop.slug}"/>'
+        "</Stream>"
         "</Connect>"
         "</Response>"
     )
