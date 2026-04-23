@@ -9,3 +9,4 @@ supabase==2.15.1
 twilio==9.6.1
 pytest==8.3.5
 pytest-asyncio==0.26.0
+python-multipart==0.0.20
