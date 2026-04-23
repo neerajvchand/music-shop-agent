@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class Shop(BaseModel):
@@ -25,6 +25,7 @@ class Shop(BaseModel):
     business_hours_json: Any
     services_json: Any
     tool_definitions_json: Any
+    keyterms: list[str] = Field(default_factory=list, alias="keyterms_json")
     gcal_calendar_id: str | None = None
     gcal_service_account_email: str | None = None
     approval_mode: str

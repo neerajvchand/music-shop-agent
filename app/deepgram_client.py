@@ -36,6 +36,13 @@ class DeepgramAgentClient:
 
         self._keepalive_task = asyncio.create_task(self._keepalive_loop())
     def _build_settings(self) -> dict:
+        listen_provider: dict = {
+            "type": "deepgram",
+            "model": "nova-3",
+        }
+        if self._shop.keyterms:
+            listen_provider["keyterms"] = self._shop.keyterms
+
         return {
             "type": "Settings",
             "audio": {
@@ -51,10 +58,7 @@ class DeepgramAgentClient:
             },
             "agent": {
                 "listen": {
-                    "provider": {
-                        "type": "deepgram",
-                        "model": "nova-3",
-                    },
+                    "provider": listen_provider,
                 },
                 "think": {
                     "provider": {
@@ -62,6 +66,14 @@ class DeepgramAgentClient:
                         "model": self._shop.llm_model,
                     },
                     "prompt": self._shop.system_prompt,
+                    "functions": [
+                        {
+                            "name": "end_call",
+                            "description": "End the phone call after the caller says goodbye or the conversation is complete.",
+                            "parameters": {"type": "object", "properties": {}},
+                            "client_side": True,
+                        },
+                    ],
                 },
                 "speak": {
                     "provider": {
@@ -95,6 +107,28 @@ class DeepgramAgentClient:
                         logger.warning("Non-JSON text from Deepgram: %s", message[:100])
         except websockets.exceptions.ConnectionClosed as e:
             logger.info("Deepgram WebSocket closed: %s", e)
+
+    async def inject_goodbye(self) -> None:
+        """Inject a goodbye message for the agent to speak."""
+        if self._ws:
+            msg = {
+                "type": "InjectAgentMessage",
+                "content": "I'm sorry, but we've reached the maximum call duration. Thank you for calling, goodbye!",
+            }
+            await self._ws.send(json.dumps(msg))
+
+    async def send_function_call_response(
+        self, function_id: str, name: str, result: str
+    ) -> None:
+        """Send a FunctionCallResponse back to Deepgram."""
+        if self._ws:
+            msg = {
+                "type": "FunctionCallResponse",
+                "function_call_id": function_id,
+                "name": name,
+                "output": result,
+            }
+            await self._ws.send(json.dumps(msg))
 
     async def close(self) -> None:
         """Clean up WebSocket and keepalive task."""

@@ -31,7 +31,7 @@ async def startup() -> None:
         from app.supabase_client import get_supabase
 
         result = get_supabase().table("shops").select("id").limit(1).execute()
-        logger.info("Supabase connected, shops table accessible (%d rows sampled)", len(result.data))
+        logger.debug("Supabase connected, shops table accessible (%d rows sampled)", len(result.data))
     except Exception as e:
         logger.error("Supabase smoke test failed: %s", e)
         # Don't crash — Railway needs the health endpoint up to report status
