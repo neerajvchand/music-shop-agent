@@ -138,9 +138,9 @@ class DeepgramAgentClient:
         if self._ws:
             msg = {
                 "type": "FunctionCallResponse",
-                "function_call_id": function_id,
+                "id": function_id,
                 "name": name,
-                "output": result,
+                "content": result,
             }
             await self._ws.send(json.dumps(msg))
 
