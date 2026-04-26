@@ -122,7 +122,7 @@ async def run_bridge(twilio_ws: WebSocket) -> None:
         )
 
         done, pending = await asyncio.wait(
-            [twilio_task, deepgram_task, timeout_task, silence_task, farewell_task],
+            [twilio_task, deepgram_task, farewell_task],
             return_when=asyncio.FIRST_COMPLETED,
         )
 
@@ -131,11 +131,12 @@ async def run_bridge(twilio_ws: WebSocket) -> None:
             call_state.transition_to(CallState.CLOSING)
             await asyncio.sleep(GOODBYE_DRAIN_MS / 1000)
 
-        # Cancel remaining tasks
-        for task in pending:
+        # Cancel remaining tasks (including background silence/timeout tasks)
+        background_tasks = [silence_task, timeout_task]
+        for task in [*pending, *background_tasks]:
             task.cancel()
         # Await to suppress unhandled exceptions
-        await asyncio.gather(*pending, return_exceptions=True)
+        await asyncio.gather(*pending, *background_tasks, return_exceptions=True)
 
         # Check for exceptions in completed tasks
         for task in done:
@@ -339,9 +340,14 @@ async def _silence_watchdog(
     shop: Shop | None = None,
     call_state: CallStateTracker | None = None,
 ) -> None:
-    """If no caller audio for SILENCE_TIMEOUT seconds, transition to farewell."""
-    while call_state is None or call_state.is_active():
-        await asyncio.sleep(1)
+    """If no caller audio for SILENCE_TIMEOUT seconds, transition to farewell.
+
+    Runs until cancelled — never returns on its own.
+    """
+    while True:
+        await asyncio.sleep(5)
+        if not (call_state is None or call_state.is_active()):
+            continue
         if silence_tracker.elapsed() >= SILENCE_TIMEOUT:
             call_sid = call_state.call_sid if call_state else "?"
             logger.info("Silence timeout (%ds) reached, ending call (call=%s)", SILENCE_TIMEOUT, call_sid)
@@ -349,7 +355,7 @@ async def _silence_watchdog(
                 call_state.transition_to(CallState.AWAITING_FAREWELL)
             farewell_msg = shop.farewell if shop else None
             await deepgram.inject_goodbye(farewell_msg)
-            return
+            continue
 
 
 async def _call_timeout(
@@ -359,7 +365,7 @@ async def _call_timeout(
     stream_sid: str | None,
     call_state: CallStateTracker | None = None,
 ) -> None:
-    """Enforce max call duration."""
+    """Enforce max call duration. Runs until cancelled."""
     await asyncio.sleep(seconds)
     call_sid = call_state.call_sid if call_state else "?"
     logger.info("Call reached %ds limit, closing (call=%s)", seconds, call_sid)
@@ -368,7 +374,9 @@ async def _call_timeout(
         if call_state:
             call_state.transition_to(CallState.AWAITING_FAREWELL)
         await deepgram.inject_goodbye()
-        # Give a moment for the goodbye to be spoken
-        await asyncio.sleep(3)
     except Exception as e:
         logger.warning("Could not send goodbye: %s", e)
+
+    # Keep alive until cancelled — farewell_safety_watchdog handles disconnect
+    while True:
+        await asyncio.sleep(5)
