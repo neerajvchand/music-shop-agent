@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
+from enum import Enum
 
 from fastapi import WebSocket, WebSocketDisconnect
 
@@ -19,7 +20,39 @@ logger = logging.getLogger(__name__)
 
 MAX_CALL_DURATION = 300  # 5 minutes
 SILENCE_TIMEOUT = 30  # seconds of silence before auto-goodbye
-GOODBYE_DRAIN_MS = 4500  # ms to let final TTS play before closing
+GOODBYE_DRAIN_MS = 400  # ms to let Twilio buffer flush before closing
+FAREWELL_SAFETY_TIMEOUT = 8  # max seconds to wait for LLM-spoken farewell
+
+
+class CallState(Enum):
+    ACTIVE_CONVERSATION = "active_conversation"
+    AWAITING_FAREWELL = "awaiting_farewell"
+    CLOSING = "closing"
+
+
+class CallStateTracker:
+    """Encapsulate call state with logged transitions."""
+
+    def __init__(self, call_sid: str) -> None:
+        self.call_sid = call_sid
+        self.state = CallState.ACTIVE_CONVERSATION
+
+    def transition_to(self, new_state: CallState) -> None:
+        old = self.state
+        self.state = new_state
+        logger.info(
+            "State transition: %s -> %s (call=%s)",
+            old.value, new_state.value, self.call_sid,
+        )
+
+    def is_active(self) -> bool:
+        return self.state == CallState.ACTIVE_CONVERSATION
+
+    def is_awaiting_farewell(self) -> bool:
+        return self.state == CallState.AWAITING_FAREWELL
+
+    def is_closing(self) -> bool:
+        return self.state == CallState.CLOSING
 
 
 class SilenceTracker:
@@ -64,27 +97,39 @@ async def run_bridge(twilio_ws: WebSocket) -> None:
         deepgram = DeepgramAgentClient(settings.deepgram_api_key, shop)
         await deepgram.connect()
 
+        call_state = CallStateTracker(call_sid=call_sid or "unknown")
         silence_tracker = SilenceTracker()
-        end_call_event = asyncio.Event()
+        agent_audio_done_event = asyncio.Event()
 
         # Run both directions concurrently with a hard timeout
         twilio_task = asyncio.create_task(
-            _twilio_to_deepgram(twilio_ws, deepgram, silence_tracker)
+            _twilio_to_deepgram(twilio_ws, deepgram, silence_tracker, call_state)
         )
         deepgram_task = asyncio.create_task(
-            _deepgram_to_twilio(deepgram, twilio_ws, stream_sid, transcript_parts, end_call_event, silence_tracker, shop)
+            _deepgram_to_twilio(
+                deepgram, twilio_ws, stream_sid, transcript_parts,
+                call_state, silence_tracker, agent_audio_done_event,
+            )
         )
         timeout_task = asyncio.create_task(
-            _call_timeout(MAX_CALL_DURATION, twilio_ws, deepgram, stream_sid)
+            _call_timeout(MAX_CALL_DURATION, twilio_ws, deepgram, stream_sid, call_state)
         )
         silence_task = asyncio.create_task(
-            _silence_watchdog(silence_tracker, deepgram, end_call_event)
+            _silence_watchdog(silence_tracker, deepgram, shop, call_state)
+        )
+        farewell_task = asyncio.create_task(
+            _farewell_safety_watchdog(call_state, deepgram, shop, agent_audio_done_event)
         )
 
         done, pending = await asyncio.wait(
-            [twilio_task, deepgram_task, timeout_task, silence_task],
+            [twilio_task, deepgram_task, timeout_task, silence_task, farewell_task],
             return_when=asyncio.FIRST_COMPLETED,
         )
+
+        # If farewell flow completed, transition to CLOSING and let Twilio buffer flush
+        if farewell_task in done:
+            call_state.transition_to(CallState.CLOSING)
+            await asyncio.sleep(GOODBYE_DRAIN_MS / 1000)
 
         # Cancel remaining tasks
         for task in pending:
@@ -96,10 +141,6 @@ async def run_bridge(twilio_ws: WebSocket) -> None:
         for task in done:
             if task.exception() and not isinstance(task.exception(), asyncio.CancelledError):
                 logger.error("Bridge task error: %s", task.exception())
-
-        # Let final TTS drain before closing if end_call was triggered
-        if end_call_event.is_set():
-            await asyncio.sleep(GOODBYE_DRAIN_MS / 1000)
 
     except WebSocketDisconnect:
         logger.info("Twilio WebSocket disconnected")
@@ -117,8 +158,7 @@ async def run_bridge(twilio_ws: WebSocket) -> None:
         except Exception:
             pass
 
-        # Log the call
-# Log the call (only if we resolved a shop)
+        # Log the call (only if we resolved a shop)
         if shop is not None:
             try:
                 await log_call(
@@ -150,7 +190,10 @@ async def _wait_for_start(twilio_ws: WebSocket) -> tuple[str, str | None, str | 
 
 
 async def _twilio_to_deepgram(
-    twilio_ws: WebSocket, deepgram: DeepgramAgentClient, silence_tracker: SilenceTracker
+    twilio_ws: WebSocket,
+    deepgram: DeepgramAgentClient,
+    silence_tracker: SilenceTracker,
+    call_state: CallStateTracker | None = None,
 ) -> None:
     """Forward audio from Twilio to Deepgram."""
     try:
@@ -159,13 +202,16 @@ async def _twilio_to_deepgram(
             msg = json.loads(raw)
 
             if msg.get("event") == "media":
+                # Hard-gate: only forward caller audio during active conversation
+                if call_state and not call_state.is_active():
+                    continue
                 audio_bytes = decode_twilio_media(msg)
                 await deepgram.send_audio(audio_bytes)
             elif msg.get("event") == "stop":
-                logger.info("Twilio stream stopped")
+                logger.info("Twilio stream stopped (call=%s)", call_state.call_sid if call_state else "?")
                 return
     except WebSocketDisconnect:
-        logger.info("Twilio disconnected in twilio_to_deepgram")
+        logger.info("Twilio disconnected (call=%s)", call_state.call_sid if call_state else "?")
 
 
 async def _deepgram_to_twilio(
@@ -173,9 +219,9 @@ async def _deepgram_to_twilio(
     twilio_ws: WebSocket,
     stream_sid: str,
     transcript_parts: list[str],
-    end_call_event: asyncio.Event,
-    silence_tracker: SilenceTracker,
-    shop: Shop,
+    call_state: CallStateTracker | None = None,
+    silence_tracker: SilenceTracker | None = None,
+    agent_audio_done_event: asyncio.Event | None = None,
 ) -> None:
     """Handle events from Deepgram and forward audio to Twilio."""
     async for event in deepgram.receive_events():
@@ -187,7 +233,10 @@ async def _deepgram_to_twilio(
             await twilio_ws.send_text(twilio_msg)
 
         elif event_type == "UserStartedSpeaking":
-            silence_tracker.mark_activity()
+            # Only mark silence activity if call is still active
+            if call_state is None or call_state.is_active():
+                if silence_tracker:
+                    silence_tracker.mark_activity()
             # Barge-in: clear Twilio's audio buffer
             await twilio_ws.send_text(build_clear_message(stream_sid))
 
@@ -213,40 +262,93 @@ async def _deepgram_to_twilio(
                     except (json.JSONDecodeError, TypeError):
                         logger.warning("end_call: failed to parse arguments")
 
+                    call_sid = call_state.call_sid if call_state else "?"
+
                     if not confirmed:
                         logger.warning(
-                            "end_call called without confirmation (reason=%r), ignoring",
-                            reason,
+                            "end_call rejected: caller_confirmed_done=false (reason=%r, call=%s)",
+                            reason, call_sid,
                         )
-                        await deepgram.send_function_call_response(fn_id, "end_call", "ignored")
+                        await deepgram.send_function_call_response(
+                            fn_id, "end_call",
+                            '{"status": "ignored", "reason": "caller_confirmed_done must be true"}',
+                        )
                         continue
 
-                    logger.info("end_call confirmed (reason=%r), initiating hangup", reason)
-                    await deepgram.send_function_call_response(fn_id, "end_call", "ok")
-                    await deepgram.inject_goodbye(shop.farewell)
-                    end_call_event.set()
+                    logger.info("end_call accepted (reason=%r, call=%s)", reason, call_sid)
+                    await deepgram.send_function_call_response(
+                        fn_id, "end_call",
+                        '{"status": "accepted, deliver farewell now"}',
+                    )
+                    if call_state:
+                        call_state.transition_to(CallState.AWAITING_FAREWELL)
                     return
                 else:
                     logger.warning(
                         "Unhandled FunctionCallRequest: %s (client_side=%s)", fn_name, client_side
                     )
 
+        elif event_type == "AgentAudioDone":
+            if call_state and call_state.is_awaiting_farewell() and agent_audio_done_event:
+                logger.info("AgentAudioDone received in AWAITING_FAREWELL (call=%s)", call_state.call_sid)
+                agent_audio_done_event.set()
+
         elif event_type in ("Error", "Warning"):
             logger.warning("Deepgram %s: %s", event_type, event.get("message", event))
+
+
+async def _farewell_safety_watchdog(
+    call_state: CallStateTracker,
+    deepgram: DeepgramAgentClient,
+    shop: Shop,
+    agent_audio_done_event: asyncio.Event,
+) -> None:
+    """Wait for LLM farewell to finish; inject fallback if safety timeout fires."""
+    # Poll until we enter AWAITING_FAREWELL (or CLOSING)
+    while not call_state.is_awaiting_farewell():
+        if call_state.is_closing():
+            return
+        await asyncio.sleep(0.2)
+
+    # Now in AWAITING_FAREWELL — wait for AgentAudioDone
+    try:
+        await asyncio.wait_for(
+            agent_audio_done_event.wait(),
+            timeout=FAREWELL_SAFETY_TIMEOUT,
+        )
+        logger.info("Farewell completed via LLM (call=%s)", call_state.call_sid)
+    except asyncio.TimeoutError:
+        logger.warning(
+            "LLM farewell did not complete within %ds — injecting fallback (call=%s)",
+            FAREWELL_SAFETY_TIMEOUT, call_state.call_sid,
+        )
+        await deepgram.inject_goodbye(shop.farewell)
+        # Wait for injected farewell to finish playing
+        try:
+            await asyncio.wait_for(
+                agent_audio_done_event.wait(),
+                timeout=FAREWELL_SAFETY_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.error("Even fallback farewell did not complete (call=%s)", call_state.call_sid)
 
 
 async def _silence_watchdog(
     silence_tracker: SilenceTracker,
     deepgram: DeepgramAgentClient,
-    end_call_event: asyncio.Event,
+    shop: Shop | None = None,
+    call_state: CallStateTracker | None = None,
 ) -> None:
-    """If no caller audio for SILENCE_TIMEOUT seconds, inject goodbye and signal end."""
-    while True:
+    """If no caller audio for SILENCE_TIMEOUT seconds, transition to farewell."""
+    while call_state is None or call_state.is_active():
         await asyncio.sleep(1)
         if silence_tracker.elapsed() >= SILENCE_TIMEOUT:
-            logger.info("Silence timeout (%ds) reached, injecting goodbye", SILENCE_TIMEOUT)
-            await deepgram.inject_goodbye()
-            end_call_event.set()
+            call_sid = call_state.call_sid if call_state else "?"
+            logger.info("Silence timeout (%ds) reached, ending call (call=%s)", SILENCE_TIMEOUT, call_sid)
+            if call_state:
+                call_state.transition_to(CallState.AWAITING_FAREWELL)
+            farewell_msg = shop.farewell if shop else None
+            await deepgram.inject_goodbye(farewell_msg)
             return
 
 
@@ -255,12 +357,16 @@ async def _call_timeout(
     twilio_ws: WebSocket,
     deepgram: DeepgramAgentClient,
     stream_sid: str | None,
+    call_state: CallStateTracker | None = None,
 ) -> None:
     """Enforce max call duration."""
     await asyncio.sleep(seconds)
-    logger.info("Call reached %ds limit, closing", seconds)
+    call_sid = call_state.call_sid if call_state else "?"
+    logger.info("Call reached %ds limit, closing (call=%s)", seconds, call_sid)
 
     try:
+        if call_state:
+            call_state.transition_to(CallState.AWAITING_FAREWELL)
         await deepgram.inject_goodbye()
         # Give a moment for the goodbye to be spoken
         await asyncio.sleep(3)
