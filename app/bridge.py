@@ -255,6 +255,12 @@ async def _deepgram_to_twilio(
             # Barge-in: clear Twilio's audio buffer
             await twilio_ws.send_text(build_clear_message(stream_sid))
 
+        elif event_type == "AgentStartedSpeaking":
+            # Reset silence timer when agent speaks too
+            if call_state is None or call_state.is_active():
+                if silence_tracker:
+                    silence_tracker.mark_activity()
+
         elif event_type == "ConversationText":
             role = event.get("role", "unknown")
             content = event.get("content", "")
@@ -374,7 +380,7 @@ async def _silence_watchdog(
         if elapsed >= SILENCE_CHECKIN_THRESHOLD and not silence_tracker.checkin_sent and (call_state is None or call_state.is_active()):
             call_sid = call_state.call_sid if call_state else "?"
             logger.info("Silence checkin sent at %ds (call=%s)", SILENCE_CHECKIN_THRESHOLD, call_sid)
-            await deepgram.inject_goodbye("Are you still there? Take your time.")
+            await deepgram.inject_goodbye("Take your time.")
             silence_tracker.mark_checkin_sent()
         if elapsed >= SILENCE_TIMEOUT:
             call_sid = call_state.call_sid if call_state else "?"
