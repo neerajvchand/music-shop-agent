@@ -126,6 +126,14 @@ async def run_bridge(twilio_ws: WebSocket) -> None:
             return_when=asyncio.FIRST_COMPLETED,
         )
 
+        # Log which tasks completed
+        for task in done:
+            task_name = "unknown"
+            if task is twilio_task: task_name = "twilio_task"
+            elif task is deepgram_task: task_name = "deepgram_task"
+            elif task is farewell_task: task_name = "farewell_task"
+            logger.info("asyncio.wait completed task: %s (call=%s)", task_name, call_state.call_sid)
+
         # If farewell flow completed, transition to CLOSING and let Twilio buffer flush
         if farewell_task in done:
             call_state.transition_to(CallState.CLOSING)
@@ -209,10 +217,10 @@ async def _twilio_to_deepgram(
                 audio_bytes = decode_twilio_media(msg)
                 await deepgram.send_audio(audio_bytes)
             elif msg.get("event") == "stop":
-                logger.info("Twilio stream stopped (call=%s)", call_state.call_sid if call_state else "?")
+                logger.info("_twilio_to_deepgram exiting (reason=stop event received) (call=%s)", call_state.call_sid if call_state else "?")
                 return
     except WebSocketDisconnect:
-        logger.info("Twilio disconnected (call=%s)", call_state.call_sid if call_state else "?")
+        logger.info("_twilio_to_deepgram exiting (reason=WebSocketDisconnect) (call=%s)", call_state.call_sid if call_state else "?")
 
 
 async def _deepgram_to_twilio(
@@ -283,6 +291,7 @@ async def _deepgram_to_twilio(
                     )
                     if call_state:
                         call_state.transition_to(CallState.AWAITING_FAREWELL)
+                    logger.info("_deepgram_to_twilio exiting (reason=end_call accepted) (call=%s)", call_state.call_sid if call_state else "?")
                     return
                 else:
                     logger.warning(
@@ -297,6 +306,9 @@ async def _deepgram_to_twilio(
         elif event_type in ("Error", "Warning"):
             logger.warning("Deepgram %s: %s", event_type, event.get("message", event))
 
+    # async for loop ended — Deepgram WS closed
+    logger.info("_deepgram_to_twilio exiting (reason=deepgram websocket closed) (call=%s)", call_state.call_sid if call_state else "?")
+
 
 async def _farewell_safety_watchdog(
     call_state: CallStateTracker,
@@ -308,6 +320,7 @@ async def _farewell_safety_watchdog(
     # Poll until we enter AWAITING_FAREWELL (or CLOSING)
     while not call_state.is_awaiting_farewell():
         if call_state.is_closing():
+            logger.info("_farewell_safety_watchdog exiting (reason=state was already closing) (call=%s)", call_state.call_sid)
             return
         await asyncio.sleep(0.2)
 
@@ -318,6 +331,7 @@ async def _farewell_safety_watchdog(
             timeout=FAREWELL_SAFETY_TIMEOUT,
         )
         logger.info("Farewell completed via LLM (call=%s)", call_state.call_sid)
+        logger.info("_farewell_safety_watchdog exiting (reason=llm farewell completed) (call=%s)", call_state.call_sid)
     except asyncio.TimeoutError:
         logger.warning(
             "LLM farewell did not complete within %ds — injecting fallback (call=%s)",
@@ -330,8 +344,10 @@ async def _farewell_safety_watchdog(
                 agent_audio_done_event.wait(),
                 timeout=FAREWELL_SAFETY_TIMEOUT,
             )
+            logger.info("_farewell_safety_watchdog exiting (reason=fallback farewell completed) (call=%s)", call_state.call_sid)
         except asyncio.TimeoutError:
             logger.error("Even fallback farewell did not complete (call=%s)", call_state.call_sid)
+            logger.info("_farewell_safety_watchdog exiting (reason=fallback also failed) (call=%s)", call_state.call_sid)
 
 
 async def _silence_watchdog(
