@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 MAX_CALL_DURATION = 300  # 5 minutes
 SILENCE_TIMEOUT = 30  # seconds of silence before auto-goodbye
 SILENCE_CHECKIN_THRESHOLD = 15  # seconds of silence before "still there?" check-in
-GOODBYE_DRAIN_MS = 1500  # ms to let Twilio buffer flush before closing
+GOODBYE_DRAIN_MS = 3000  # ms to let Twilio buffer flush before closing
 FAREWELL_SAFETY_TIMEOUT = 8  # max seconds to wait for LLM-spoken farewell
 
 
