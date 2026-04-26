@@ -20,7 +20,8 @@ logger = logging.getLogger(__name__)
 
 MAX_CALL_DURATION = 300  # 5 minutes
 SILENCE_TIMEOUT = 30  # seconds of silence before auto-goodbye
-GOODBYE_DRAIN_MS = 400  # ms to let Twilio buffer flush before closing
+SILENCE_CHECKIN_THRESHOLD = 15  # seconds of silence before "still there?" check-in
+GOODBYE_DRAIN_MS = 1500  # ms to let Twilio buffer flush before closing
 FAREWELL_SAFETY_TIMEOUT = 8  # max seconds to wait for LLM-spoken farewell
 
 
@@ -60,9 +61,14 @@ class SilenceTracker:
 
     def __init__(self) -> None:
         self._last_activity: float = asyncio.get_event_loop().time()
+        self.checkin_sent: bool = False
 
     def mark_activity(self) -> None:
         self._last_activity = asyncio.get_event_loop().time()
+        self.checkin_sent = False
+
+    def mark_checkin_sent(self) -> None:
+        self.checkin_sent = True
 
     def elapsed(self) -> float:
         return asyncio.get_event_loop().time() - self._last_activity
@@ -291,8 +297,8 @@ async def _deepgram_to_twilio(
                     )
                     if call_state:
                         call_state.transition_to(CallState.AWAITING_FAREWELL)
-                    logger.info("_deepgram_to_twilio exiting (reason=end_call accepted) (call=%s)", call_state.call_sid if call_state else "?")
-                    return
+                    logger.info("end_call processed, continuing to listen for AgentAudioDone (call=%s)", call_state.call_sid if call_state else "?")
+                    continue
                 else:
                     logger.warning(
                         "Unhandled FunctionCallRequest: %s (client_side=%s)", fn_name, client_side
@@ -364,7 +370,13 @@ async def _silence_watchdog(
         await asyncio.sleep(5)
         if not (call_state is None or call_state.is_active()):
             continue
-        if silence_tracker.elapsed() >= SILENCE_TIMEOUT:
+        elapsed = silence_tracker.elapsed()
+        if elapsed >= SILENCE_CHECKIN_THRESHOLD and not silence_tracker.checkin_sent and (call_state is None or call_state.is_active()):
+            call_sid = call_state.call_sid if call_state else "?"
+            logger.info("Silence checkin sent at %ds (call=%s)", SILENCE_CHECKIN_THRESHOLD, call_sid)
+            await deepgram.inject_goodbye("Are you still there? Take your time.")
+            silence_tracker.mark_checkin_sent()
+        if elapsed >= SILENCE_TIMEOUT:
             call_sid = call_state.call_sid if call_state else "?"
             logger.info("Silence timeout (%ds) reached, ending call (call=%s)", SILENCE_TIMEOUT, call_sid)
             if call_state:
