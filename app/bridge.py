@@ -69,6 +69,7 @@ class SilenceTracker:
     def __init__(self) -> None:
         self._last_activity: float = asyncio.get_event_loop().time()
         self.checkin_sent: bool = False
+        self.agent_speaking: bool = False
 
     def mark_activity(self) -> None:
         self._last_activity = asyncio.get_event_loop().time()
@@ -314,6 +315,7 @@ async def _deepgram_to_twilio(
             if call_state is None or call_state.is_active():
                 if silence_tracker:
                     silence_tracker.mark_activity()
+                    silence_tracker.agent_speaking = True
 
         elif event_type == "ConversationText":
             role = event.get("role", "unknown")
@@ -327,12 +329,20 @@ async def _deepgram_to_twilio(
                 )
 
         elif event_type == "AgentAudioDone":
+            if silence_tracker:
+                silence_tracker.agent_speaking = False
             if call_state and call_state.is_awaiting_farewell() and agent_audio_done_event:
                 logger.info("AgentAudioDone received in AWAITING_FAREWELL (call=%s)", call_state.call_sid)
                 agent_audio_done_event.set()
 
         elif event_type in ("Error", "Warning"):
             logger.warning("Deepgram %s: %s", event_type, event.get("message", event))
+            if event_type == "Error" and event.get("code") == "FAILED_TO_THINK":
+                logger.error("Deepgram FAILED_TO_THINK — prompt too long or complex. Closing call gracefully.")
+                if agent_audio_done_event:
+                    agent_audio_done_event.set()
+                if call_state:
+                    call_state.transition_to(BridgeCallState.AWAITING_FAREWELL)
 
     logger.info("_deepgram_to_twilio exiting (reason=deepgram websocket closed) (call=%s)", call_state.call_sid if call_state else "?")
 
@@ -567,7 +577,7 @@ async def _silence_watchdog(
         if not (call_state is None or call_state.is_active()):
             continue
         elapsed = silence_tracker.elapsed()
-        if elapsed >= SILENCE_CHECKIN_THRESHOLD and not silence_tracker.checkin_sent and (call_state is None or call_state.is_active()):
+        if elapsed >= SILENCE_CHECKIN_THRESHOLD and not silence_tracker.checkin_sent and not silence_tracker.agent_speaking and (call_state is None or call_state.is_active()):
             call_sid = call_state.call_sid if call_state else "?"
             logger.info("Silence checkin sent at %ds (call=%s)", SILENCE_CHECKIN_THRESHOLD, call_sid)
             await deepgram.inject_goodbye("Take your time.")
