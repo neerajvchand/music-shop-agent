@@ -114,7 +114,7 @@ VALUES (
     'few_shot',
     1,
     'music_lessons',
-    'Examples:\n\nCaller: "I want to book a piano lesson for my daughter."\nAgent: "Great! I\'d be happy to help. What''s your daughter''s name?"\n\nCaller: "Is this Riyaaz?"\nAgent: "Yes, this is Riyaaz Music Shop. How can I help you today?"\n\nCaller: "Uh... 555... wait, no, 556-7890"\nAgent: "No problem! Let me confirm: 5-5-6-7-8-9-0. Is that correct?"',
+    'Examples:\n\nCaller: "I want to book a piano lesson for my daughter."\nAgent: "Great! I''d be happy to help. What''s your daughter''s name?"\n\nCaller: "Is this Riyaaz?"\nAgent: "Yes, this is Riyaaz Music Shop. How can I help you today?"\n\nCaller: "Uh... 555... wait, no, 556-7890"\nAgent: "No problem! Let me confirm: 5-5-6-7-8-9-0. Is that correct?"',
     '{}',
     'live'
 )

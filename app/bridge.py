@@ -133,7 +133,7 @@ async def run_bridge(twilio_ws: WebSocket) -> None:
 
         # Initialize state machines
         from app.prompts.state_machine import StateMachine
-        conversation_sm = StateMachine(call_sid=call_sid or "unknown")
+        conversation_sm = StateMachine(call_sid=call_sid or "unknown", shop_id=shop.id)
         if draft:
             conversation_sm.current = ConversationState.SLOT_CAPTURE
         else:

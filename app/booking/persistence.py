@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.booking.state import BookingDraft, SlotDefinition
@@ -70,7 +71,7 @@ async def save_draft(draft: BookingDraft) -> None:
         "state": draft.state,
         "captured_slots_json": draft.captured,
         "confirmed_slots_json": draft.confirmed,
-        "expires_at": "now() + interval '10 minutes'",
+        "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
     }
     try:
         # Try upsert

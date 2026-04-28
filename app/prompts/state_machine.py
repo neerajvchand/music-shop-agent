@@ -88,6 +88,7 @@ class StateMachine:
     """Tracks current state and emits transition events."""
 
     call_sid: str
+    shop_id: str = ""
     current: ConversationState = field(default=ConversationState.GREETING)
     history: list[tuple[datetime, StateTransition, ConversationState]] = field(
         default_factory=list
@@ -113,7 +114,7 @@ class StateMachine:
 
         # Persist event asynchronously (fire-and-forget)
         try:
-            _persist_event(self.call_sid, transition, target)
+            _persist_event(self.call_sid, self.shop_id, transition, target)
         except Exception as e:
             logger.warning("Failed to persist state event: %s", e)
 
@@ -126,11 +127,12 @@ class StateMachine:
         return f"state_{self.current.value}"
 
 
-def _persist_event(call_sid: str, transition: StateTransition, target: ConversationState) -> None:
+def _persist_event(call_sid: str, shop_id: str, transition: StateTransition, target: ConversationState) -> None:
     """Write transition to call_events table."""
     from app.supabase_client import get_supabase
 
     get_supabase().table("call_events").insert({
+        "shop_id": shop_id or "unknown",
         "call_sid": call_sid,
         "event_type": "state_transition",
         "payload_json": {

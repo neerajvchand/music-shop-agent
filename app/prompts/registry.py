@@ -75,28 +75,10 @@ class PromptRegistry:
 
     @staticmethod
     def resolve_bindings(shop_id: str, vertical: str | None = None) -> list[dict[str, Any]]:
-        """Return active module bindings for a shop, falling back to defaults."""
+        """Return explicit module bindings for a shop. No auto-resolution — empty means fallback to monolithic prompt."""
         sb = get_supabase()
         result = sb.table("shop_prompt_bindings").select("*").eq("shop_id", shop_id).execute()
-        bindings = result.data or []
-
-        # Ensure core modules are present; if a shop lacks a binding, use the latest live
-        core_modules = ["persona", "vertical", "business", "state", "runtime", "tools", "guardrails", "few_shot"]
-        bound_names = {b["module_name"] for b in bindings}
-
-        for core in core_modules:
-            if core not in bound_names:
-                try:
-                    version = PromptRegistry.get_latest_live_version(core, vertical)
-                    bindings.append({
-                        "module_name": core,
-                        "module_version": version,
-                        "vertical_slug": vertical,
-                    })
-                except ModuleNotFoundError:
-                    logger.warning("No live module for %s (vertical=%s), skipping", core, vertical)
-
-        return bindings
+        return result.data or []
 
     @staticmethod
     def clear_cache() -> None:
