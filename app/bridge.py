@@ -577,11 +577,8 @@ async def _silence_watchdog(
         if not (call_state is None or call_state.is_active()):
             continue
         elapsed = silence_tracker.elapsed()
-        if elapsed >= SILENCE_CHECKIN_THRESHOLD and not silence_tracker.checkin_sent and not silence_tracker.agent_speaking and (call_state is None or call_state.is_active()):
-            call_sid = call_state.call_sid if call_state else "?"
-            logger.info("Silence checkin sent at %ds (call=%s)", SILENCE_CHECKIN_THRESHOLD, call_sid)
-            await deepgram.inject_goodbye("Take your time.")
-            silence_tracker.mark_checkin_sent()
+        # 15s check-in removed: InjectAgentMessage sounds unnatural and interrupts caller's thinking time.
+        # Only the 30s hard timeout below remains.
         if elapsed >= SILENCE_TIMEOUT:
             call_sid = call_state.call_sid if call_state else "?"
             logger.info("Silence timeout (%ds) reached, ending call (call=%s)", SILENCE_TIMEOUT, call_sid)
