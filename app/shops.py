@@ -30,6 +30,9 @@ class Shop(BaseModel):
     gcal_calendar_id: str | None = None
     gcal_service_account_email: str | None = None
     approval_mode: str
+    vertical_slug: str | None = None
+    test_mode: bool = False
+    owner_notification_rules_json: Any = None
     created_at: str | None = None
     updated_at: str | None = None
 
