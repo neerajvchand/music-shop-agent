@@ -3,7 +3,7 @@ import { ShopSettings, ShopSettingsSchema } from "./schema";
 
 function normalizeServices(raw: unknown[]): ShopSettings["services"] {
   return raw.map((s: any) => ({
-    id: s.id || s.slug || crypto.randomUUID(),
+    id: s.id || s.slug,
     name: s.name,
     duration_minutes: s.duration_minutes || s.duration_min || 60,
     price: s.price ?? null,

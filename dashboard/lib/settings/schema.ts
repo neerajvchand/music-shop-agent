@@ -25,7 +25,7 @@ export const BusinessHoursSchema = z.record(
 );
 
 export const ServiceSchema = z.object({
-  id: z.string().uuid(),
+  id: z.string().min(1),
   name: z.string().min(1).max(100),
   duration_minutes: z.number().int().min(5).max(480),
   price: z.number().int().min(0).nullable().optional(),
