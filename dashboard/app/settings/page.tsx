@@ -55,6 +55,7 @@ export default function SettingsPage() {
   const [settings, setSettings] = useState<ShopSettings>(defaultSettings);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [savedSections, setSavedSections] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     fetch("/api/settings")
@@ -74,13 +75,18 @@ export default function SettingsPage() {
   }, []);
 
   const save = useCallback(
-    async (partial: Partial<ShopSettings>) => {
+    async (partial: Partial<ShopSettings>, sectionKey: string) => {
       const res = await fetch("/api/settings", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(partial),
       });
-      if (!res.ok) {
+      if (res.ok) {
+        setSavedSections((prev) => ({ ...prev, [sectionKey]: true }));
+        setTimeout(() => {
+          setSavedSections((prev) => ({ ...prev, [sectionKey]: false }));
+        }, 1500);
+      } else {
         console.error("Save failed");
       }
     },
@@ -119,6 +125,7 @@ export default function SettingsPage() {
       <SettingsSection
         title="Greeting"
         description="What the agent says when answering the phone."
+        saved={savedSections["greeting"]}
       >
         <input
           type="text"
@@ -127,7 +134,7 @@ export default function SettingsPage() {
           onChange={(e) =>
             setSettings((s) => ({ ...s, greeting: e.target.value }))
           }
-          onBlur={() => save({ greeting: settings.greeting })}
+          onBlur={() => save({ greeting: settings.greeting }, "greeting")}
           className="w-full px-3 py-2 rounded-md border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
         />
         <p className="text-xs text-muted-foreground mt-1">
@@ -136,13 +143,13 @@ export default function SettingsPage() {
       </SettingsSection>
 
       {/* Voice */}
-      <SettingsSection title="Voice Persona" description="How the agent sounds.">
+      <SettingsSection title="Voice Persona" description="How the agent sounds." saved={savedSections["voice"]}>
         <select
           value={settings.voice_id}
           onChange={(e) => {
             const voice_id = e.target.value;
             setSettings((s) => ({ ...s, voice_id }));
-            save({ voice_id });
+            save({ voice_id }, "voice");
           }}
           className="w-full px-3 py-2 rounded-md border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
         >
@@ -155,7 +162,7 @@ export default function SettingsPage() {
       </SettingsSection>
 
       {/* Business Hours */}
-      <SettingsSection title="Business Hours">
+      <SettingsSection title="Business Hours" saved={savedSections["hours"]}>
         <div className="space-y-3">
           {DAYS.map((day) => {
             const hours = settings.business_hours[day];
@@ -176,7 +183,7 @@ export default function SettingsPage() {
                         [day]: closed ? { open: "10:00", close: "17:00" } : null,
                       };
                       setSettings((s) => ({ ...s, business_hours }));
-                      save({ business_hours });
+                      save({ business_hours }, "hours");
                     }}
                     className="rounded border-border"
                   />
@@ -194,7 +201,7 @@ export default function SettingsPage() {
                         };
                         setSettings((s) => ({ ...s, business_hours }));
                       }}
-                      onBlur={() => save({ business_hours: settings.business_hours })}
+                      onBlur={() => save({ business_hours: settings.business_hours }, "hours")}
                       className="px-2 py-1 rounded-md border border-border bg-background text-sm"
                     />
                     <span className="text-sm text-muted-foreground">to</span>
@@ -208,7 +215,7 @@ export default function SettingsPage() {
                         };
                         setSettings((s) => ({ ...s, business_hours }));
                       }}
-                      onBlur={() => save({ business_hours: settings.business_hours })}
+                      onBlur={() => save({ business_hours: settings.business_hours }, "hours")}
                       className="px-2 py-1 rounded-md border border-border bg-background text-sm"
                     />
                   </>
@@ -223,6 +230,7 @@ export default function SettingsPage() {
       <SettingsSection
         title="Services"
         description="What the agent can book."
+        saved={savedSections["services"]}
       >
         <div className="space-y-3">
           {settings.services.map((svc, idx) => (
@@ -240,7 +248,7 @@ export default function SettingsPage() {
                   );
                   setSettings((s) => ({ ...s, services }));
                 }}
-                onBlur={() => save({ services: settings.services })}
+                onBlur={() => save({ services: settings.services }, "services")}
                 className="flex-1 px-2 py-1 rounded-md border border-border bg-background text-sm"
               />
               <input
@@ -255,7 +263,7 @@ export default function SettingsPage() {
                   );
                   setSettings((s) => ({ ...s, services }));
                 }}
-                onBlur={() => save({ services: settings.services })}
+                onBlur={() => save({ services: settings.services }, "services")}
                 className="w-20 px-2 py-1 rounded-md border border-border bg-background text-sm"
               />
               <label className="flex items-center gap-1 text-sm">
@@ -267,7 +275,7 @@ export default function SettingsPage() {
                       i === idx ? { ...s, active: !s.active } : s
                     );
                     setSettings((s) => ({ ...s, services }));
-                    save({ services });
+                    save({ services }, "services");
                   }}
                   className="rounded border-border"
                 />
@@ -277,7 +285,7 @@ export default function SettingsPage() {
                 onClick={() => {
                   const services = settings.services.filter((_, i) => i !== idx);
                   setSettings((s) => ({ ...s, services }));
-                  save({ services });
+                  save({ services }, "services");
                 }}
                 className="text-muted-foreground hover:text-red-600 transition-colors"
               >
@@ -310,6 +318,7 @@ export default function SettingsPage() {
       <SettingsSection
         title="Booking Buffer"
         description="Minutes between appointments."
+        saved={savedSections["buffer"]}
       >
         <div className="flex items-center gap-3">
           <input
@@ -325,7 +334,7 @@ export default function SettingsPage() {
               }))
             }
             onBlur={() =>
-              save({ booking_buffer_minutes: settings.booking_buffer_minutes })
+              save({ booking_buffer_minutes: settings.booking_buffer_minutes }, "buffer")
             }
             className="flex-1"
           />
@@ -339,6 +348,7 @@ export default function SettingsPage() {
       <SettingsSection
         title="Off-Hours Behavior"
         description="What the agent does when the shop is closed."
+        saved={savedSections["off_hours"]}
       >
         <div className="space-y-2">
           {OFF_HOURS_OPTIONS.map((opt) => (
@@ -356,7 +366,7 @@ export default function SettingsPage() {
                     ...s,
                     off_hours_behavior: opt.value as ShopSettings["off_hours_behavior"],
                   }));
-                  save({ off_hours_behavior: opt.value as ShopSettings["off_hours_behavior"] });
+                  save({ off_hours_behavior: opt.value as ShopSettings["off_hours_behavior"] }, "off_hours");
                 }}
                 className="rounded-full border-border"
               />

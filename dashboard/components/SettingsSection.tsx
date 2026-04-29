@@ -1,24 +1,15 @@
 "use client";
 
-import { useState, useCallback } from "react";
 import { Check } from "lucide-react";
 
 interface SettingsSectionProps {
   title: string;
   description?: string;
   children: React.ReactNode;
-  onSave?: () => void;
+  saved?: boolean;
 }
 
-export function SettingsSection({ title, description, children, onSave }: SettingsSectionProps) {
-  const [saved, setSaved] = useState(false);
-
-  const showSaved = useCallback(() => {
-    setSaved(true);
-    onSave?.();
-    setTimeout(() => setSaved(false), 1500);
-  }, [onSave]);
-
+export function SettingsSection({ title, description, children, saved }: SettingsSectionProps) {
   return (
     <div className="rounded-xl border border-border bg-card p-6">
       <div className="flex items-center justify-between mb-4">
@@ -35,7 +26,7 @@ export function SettingsSection({ title, description, children, onSave }: Settin
           </span>
         )}
       </div>
-      <div onBlur={showSaved}>{children}</div>
+      {children}
     </div>
   );
 }
