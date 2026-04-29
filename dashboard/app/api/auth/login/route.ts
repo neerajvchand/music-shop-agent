@@ -6,7 +6,7 @@ export async function POST(request: NextRequest) {
   const email = String(formData.get("email"));
   const origin = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
 
-  const supabase = createClient();
+  const supabase = await createClient();
   const { error } = await supabase.auth.signInWithOtp({
     email,
     options: {
