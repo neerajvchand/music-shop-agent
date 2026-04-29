@@ -3,6 +3,7 @@ import { CalendarCard } from "@/components/calendar-card";
 import { StatsStrip } from "@/components/stats-strip";
 import { DecisionsList } from "@/components/decisions-list";
 import { LogoutButton } from "@/components/logout-button";
+import { LoginForm } from "@/components/login-form";
 
 export default async function DashboardPage({
   searchParams,
@@ -147,30 +148,6 @@ function LoginScreen() {
         <LoginForm />
       </div>
     </div>
-  );
-}
-
-function LoginForm() {
-  return (
-    <form
-      action="/api/auth/login"
-      method="POST"
-      className="mt-6 space-y-4"
-    >
-      <input
-        type="email"
-        name="email"
-        placeholder="happy@riyaazmusic.com"
-        required
-        className="w-full px-3 py-2 rounded-md border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-      />
-      <button
-        type="submit"
-        className="w-full px-4 py-2 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 transition-opacity"
-      >
-        Send Magic Link
-      </button>
-    </form>
   );
 }
 
