@@ -45,3 +45,10 @@ htmlcov/
 # Distribution
 *.tar.gz
 *.zip
+
+# Dashboard
+/dashboard/node_modules/
+/dashboard/.next/
+/dashboard/out/
+/dashboard/.env.local
+
