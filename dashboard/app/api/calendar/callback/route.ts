@@ -9,5 +9,5 @@ export async function GET(request: NextRequest) {
   );
   searchParams.forEach((value, key) => target.searchParams.set(key, value));
 
-  return NextResponse.redirect(target.toString());
+  return NextResponse.redirect(target.toString(), 307);
 }

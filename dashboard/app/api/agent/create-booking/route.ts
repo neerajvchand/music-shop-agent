@@ -3,6 +3,7 @@ import { verifyAgentRequest } from "../_auth";
 import { refreshIfNeeded } from "@/lib/integrations/refresh";
 import { getProvider } from "@/lib/integrations/registry";
 import { createServiceClient } from "@/lib/supabase";
+import { logIntegrationEvent } from "@/lib/integrations/events";
 
 export async function POST(request: NextRequest) {
   const auth = verifyAgentRequest(request);
@@ -25,6 +26,40 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  const supabase = createServiceClient();
+
+  // 1. Lock the slot in the database first
+  const { data: bookingRow, error: insertError } = await supabase
+    .from("bookings")
+    .insert({
+      shop_id: auth.shopId,
+      service,
+      scheduled_at: startTime,
+      duration_min: parseInt(durationMinutes, 10),
+      customer_name: customerName,
+      customer_phone: customerPhone || null,
+      notes: notes || null,
+    })
+    .select("id")
+    .single();
+
+  if (insertError) {
+    // Unique violation = slot already taken
+    if (insertError.code === "23505") {
+      return NextResponse.json(
+        { error: "slot_taken" },
+        { status: 409 }
+      );
+    }
+    return NextResponse.json(
+      { error: insertError.message },
+      { status: 500 }
+    );
+  }
+
+  const bookingId = bookingRow.id;
+
+  // 2. Create Google Calendar event
   try {
     await refreshIfNeeded(auth.shopId, "google_calendar");
     const provider = getProvider("google_calendar")!;
@@ -39,41 +74,30 @@ export async function POST(request: NextRequest) {
     });
 
     if (!result.success) {
-      return NextResponse.json(
-        { error: result.error || "Booking failed" },
-        { status: 500 }
-      );
+      throw new Error(result.error || "Google Calendar booking failed");
     }
 
-    // Create local booking record
-    const supabase = createServiceClient();
-    const { data: bookingRow, error: bookingError } = await supabase
+    // Update local booking with GCal event ID
+    await supabase
       .from("bookings")
-      .insert({
-        shop_id: auth.shopId,
-        service,
-        scheduled_at: startTime,
-        duration_min: parseInt(durationMinutes, 10),
-        customer_name: customerName,
-        customer_phone: customerPhone || null,
-        notes: notes || null,
-        gcal_event_id: result.providerEventId,
-      })
-      .select("id")
-      .single();
-
-    if (bookingError) {
-      console.error("Local booking insert failed:", bookingError);
-      // Don't fail the whole request — the GCal event was created
-    }
+      .update({ gcal_event_id: result.providerEventId })
+      .eq("id", bookingId);
 
     return NextResponse.json({
       success: true,
-      bookingId: bookingRow?.id,
+      bookingId,
       providerEventId: result.providerEventId,
     });
   } catch (e: any) {
-    console.error("Create booking error:", e);
+    // 3. Rollback: delete the local booking
+    await supabase.from("bookings").delete().eq("id", bookingId);
+
+    await logIntegrationEvent(auth.shopId, "google_calendar", "booking_failed", {
+      error: e?.message || "Unknown error",
+      start_time: startTime,
+      service,
+    });
+
     return NextResponse.json(
       { error: e?.message || "Booking failed" },
       { status: 500 }

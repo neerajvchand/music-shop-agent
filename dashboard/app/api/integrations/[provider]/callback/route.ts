@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient, createServiceClient } from "@/lib/supabase";
 import { getProvider } from "@/lib/integrations/registry";
+import { logIntegrationEvent } from "@/lib/integrations/events";
 
 export async function GET(
   request: NextRequest,
@@ -65,9 +66,16 @@ export async function GET(
       { onConflict: "shop_id,provider" }
     );
 
+    await logIntegrationEvent(shopId, providerSlug, "integration_connected", {
+      provider_account_email: tokens.providerAccountEmail,
+    });
+
     return NextResponse.redirect(`${origin}/?connected=1`);
   } catch (e: any) {
     console.error("Integration callback error:", e);
+    await logIntegrationEvent(shopId, providerSlug, "integration_connect_failed", {
+      error: e?.message || "Unknown error",
+    });
     return NextResponse.redirect(`${origin}/?error=integration_failed`);
   }
 }
