@@ -73,16 +73,23 @@ export function LoginForm() {
       return;
     }
 
-    const { error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
+    try {
+      const res = await fetch("/api/auth/signin-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      const data = await res.json();
 
-    if (error) {
-      setError(error.message);
+      if (!res.ok) {
+        setError(data.error || "Sign in failed");
+        setLoading(false);
+      } else {
+        window.location.reload();
+      }
+    } catch {
+      setError("Network error. Please try again.");
       setLoading(false);
-    } else {
-      window.location.reload();
     }
   }
 
