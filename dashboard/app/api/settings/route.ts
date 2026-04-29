@@ -20,10 +20,10 @@ export async function GET() {
     return NextResponse.json({ error: "Shop not found" }, { status: 404 });
   }
 
-  const settings = await getSettings(shop.id);
+  const { settings, parseError } = await getSettings(shop.id);
   if (!settings) {
     return NextResponse.json(
-      { error: "Settings not found" },
+      { error: "Settings parse failed", details: parseError },
       { status: 500 }
     );
   }

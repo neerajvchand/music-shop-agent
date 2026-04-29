@@ -11,7 +11,9 @@ function normalizeServices(raw: unknown[]): ShopSettings["services"] {
   }));
 }
 
-export async function getSettings(shopId: string): Promise<ShopSettings | null> {
+export async function getSettings(
+  shopId: string
+): Promise<{ settings: ShopSettings | null; parseError?: string }> {
   const supabase = createServiceClient();
 
   const { data, error } = await supabase
@@ -22,7 +24,7 @@ export async function getSettings(shopId: string): Promise<ShopSettings | null> 
     .eq("id", shopId)
     .single();
 
-  if (error || !data) return null;
+  if (error || !data) return { settings: null };
 
   const parsed = ShopSettingsSchema.safeParse({
     greeting: data.greeting,
@@ -34,11 +36,12 @@ export async function getSettings(shopId: string): Promise<ShopSettings | null> 
   });
 
   if (!parsed.success) {
-    console.error("Settings parse error:", parsed.error.flatten());
-    return null;
+    const err = JSON.stringify(parsed.error.flatten());
+    console.error("Settings parse error:", err);
+    return { settings: null, parseError: err };
   }
 
-  return parsed.data;
+  return { settings: parsed.data };
 }
 
 export async function updateSettings(
