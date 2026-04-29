@@ -1,9 +1,11 @@
+import Link from "next/link";
 import { createClient } from "@/lib/supabase";
-import { CalendarCard } from "@/components/calendar-card";
+import { IntegrationCard } from "@/components/IntegrationCard";
 import { StatsStrip } from "@/components/stats-strip";
 import { DecisionsList } from "@/components/decisions-list";
 import { LogoutButton } from "@/components/logout-button";
 import { LoginForm } from "@/components/login-form";
+import { Settings } from "lucide-react";
 
 export default async function DashboardPage({
   searchParams,
@@ -98,7 +100,16 @@ export default async function DashboardPage({
               Signed in as {user.email}
             </p>
           </div>
-          <LogoutButton />
+          <div className="flex items-center gap-2">
+            <Link
+              href="/settings"
+              className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm font-medium hover:bg-muted transition-colors"
+            >
+              <Settings className="h-4 w-4" />
+              Settings
+            </Link>
+            <LogoutButton />
+          </div>
         </header>
 
         {(params.error || params.connected) && (
@@ -112,7 +123,12 @@ export default async function DashboardPage({
           />
         )}
 
-        <CalendarCard shopId={shop.id} integration={integration} />
+        <IntegrationCard
+          provider="google_calendar"
+          name="Google Calendar"
+          status={integration?.status || "disconnected"}
+          accountEmail={integration?.provider_account_email}
+        />
 
         <StatsStrip
           calls={callsCount ?? 0}
