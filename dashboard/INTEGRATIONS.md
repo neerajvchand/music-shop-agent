@@ -122,4 +122,5 @@ The generic OAuth routes (`/api/integrations/twilio_sms/connect`, `/callback`, `
 - **Never put provider-specific code outside the provider file.** The shared layer (`oauth-router.ts`, `refresh.ts`, `status.ts`) stays generic.
 - **Provider methods read from Supabase directly.** They receive `shopId` and look up their own integration row + shop config. No state in the provider instance.
 - **Token refresh is automatic.** The cron endpoint refreshes all tokens expiring within 10 minutes. Agent-facing endpoints call `refreshIfNeeded` before using a provider.
-- **Errors surface as `needs_attention`.** The dashboard shows one card with a reconnect button. Technical details go to `last_error` JSONB, not the UI.
+- **Errors surface as `needs_attention`.** The dashboard shows one card with a reconnect button. Technical details go to `last_error` JSONB and the operator-only `integration_events` table, not the client UI.
+- **Log integration events.** Use `lib/integrations/events.ts` to log significant events (connect, disconnect, token refresh, booking failures) for operator observability.
