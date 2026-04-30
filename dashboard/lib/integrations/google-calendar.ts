@@ -16,7 +16,7 @@ import {
   TimeSlot,
 } from "./provider";
 
-const GOOGLE_CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events";
+const GOOGLE_CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/userinfo.email openid";
 
 function getCredentials() {
   const clientId = process.env.GOOGLE_CLIENT_ID!;
