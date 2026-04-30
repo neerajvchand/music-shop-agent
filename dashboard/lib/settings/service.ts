@@ -26,11 +26,36 @@ export async function getSettings(
 
   if (error || !data) return { settings: null };
 
+  const rawServices = data.services_json || [];
+  const normalizedServices = normalizeServices(rawServices);
+
+  console.log("Settings services_json type:", typeof data.services_json);
+  console.log(
+    "Settings services_json isArray:",
+    Array.isArray(data.services_json)
+  );
+  console.log(
+    "Settings services_json raw:",
+    JSON.stringify(data.services_json)
+  );
+  console.log(
+    "Settings services_json first:",
+    JSON.stringify((data.services_json as any)?.[0] ?? null)
+  );
+  console.log(
+    "Settings services_json first keys:",
+    JSON.stringify(Object.keys(((data.services_json as any)?.[0] ?? {}) as object))
+  );
+  console.log(
+    "Settings services normalized:",
+    JSON.stringify(normalizedServices)
+  );
+
   const parsed = ShopSettingsSchema.safeParse({
     greeting: data.greeting,
     voice_id: data.voice_id,
     business_hours: data.business_hours_json,
-    services: normalizeServices(data.services_json || []),
+    services: normalizedServices,
     booking_buffer_minutes: data.booking_buffer_minutes,
     off_hours_behavior: data.off_hours_behavior,
   });
