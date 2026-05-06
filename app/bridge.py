@@ -18,7 +18,7 @@ from app.call_logger import log_call
 from app.config import settings
 from app.deepgram_client import DeepgramAgentClient
 from app.owner.decisions import create_decision
-from app.prompts.composer import CallContext
+from app.prompts.composer import CallContext, build_call_context_from_shop
 from app.prompts.state_machine import ConversationState, StateTransition
 from app.shops import Shop
 from app.sms.client import send_owner_alert, send_sms
@@ -108,13 +108,13 @@ async def run_bridge(twilio_ws: WebSocket) -> None:
 
         logger.info("Bridge started: stream=%s call=%s shop=%s", stream_sid, call_sid, shop.slug)
 
-        # Build call context for compositional prompt
-        call_context = CallContext(
-            shop_id=shop.id,
-            vertical=shop.vertical_slug,
+        # Build call context for compositional prompt. Settings-derived fields
+        # are rendered fresh from the shop row so any dashboard edit takes
+        # effect on the next call.
+        call_context = build_call_context_from_shop(
+            shop,
             caller_phone=caller_phone,
             today=datetime.now(timezone.utc).strftime("%Y-%m-%d %A"),
-            test_mode=shop.test_mode,
         )
 
         # Check for resumed draft

@@ -33,8 +33,21 @@ class Shop(BaseModel):
     vertical_slug: str | None = None
     test_mode: bool = False
     owner_notification_rules_json: Any = None
+    public_phone: str | None = None
+    address: str | None = None
+    booking_buffer_minutes: int = 15
+    off_hours_behavior: str = "offer_callback"
+    languages_json: Any = None
+    rentals_json: Any = None
+    cancellation_policy_json: Any = None
+    payment_portal_json: Any = None
+    escalation_json: Any = None
+    talent_on_tour_json: Any = None
+    age_policy_json: Any = None
     created_at: str | None = None
     updated_at: str | None = None
+
+    model_config = {"extra": "ignore"}
 
 
 # Simple in-process cache: key -> (Shop, timestamp)
@@ -80,8 +93,11 @@ async def get_shop_by_twilio_number(number: str) -> Shop | None:
         return None
 
     shop = _row_to_shop(result.data[0])
-    _cache_set(f"twilio:{number}", shop)
-    _cache_set(f"slug:{shop.slug}", shop)
+    # Test-mode shops bypass the cache entirely so dashboard edits show up on
+    # the very next call. Production shops keep the 60s cache.
+    if not shop.test_mode:
+        _cache_set(f"twilio:{number}", shop)
+        _cache_set(f"slug:{shop.slug}", shop)
     return shop
 
 
@@ -106,6 +122,7 @@ async def get_shop_by_slug(slug: str) -> Shop | None:
         return None
 
     shop = _row_to_shop(result.data[0])
-    _cache_set(f"slug:{shop.slug}", shop)
-    _cache_set(f"twilio:{shop.twilio_number}", shop)
+    if not shop.test_mode:
+        _cache_set(f"slug:{shop.slug}", shop)
+        _cache_set(f"twilio:{shop.twilio_number}", shop)
     return shop

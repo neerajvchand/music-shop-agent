@@ -8,8 +8,29 @@ function normalizeServices(raw: unknown[]): ShopSettings["services"] {
     duration_minutes: s.duration_minutes || s.duration_min || 60,
     price: s.price ?? null,
     active: s.active !== false,
+    instructor: s.instructor ?? null,
+    mode: s.mode || "both",
+    is_lesson: s.is_lesson ?? (typeof s.name === "string" && s.name.toLowerCase().includes("lesson")),
   }));
 }
+
+const DEFAULTS = {
+  languages: { mirrors: [] },
+  rentals: {
+    short_term: { enabled: false, day_rate: 0, deposit: 0 },
+    monthly_student: { enabled: false, rate: 0 },
+  },
+  cancellation_policy: {
+    enabled: false,
+    hours_before: 48,
+    percent_charge: 50,
+    mention_when: "asked_only" as const,
+  },
+  payment_portal: { url: null, mention_autopay: false },
+  escalation: { live_person_callback: false, callback_sla_text: "shortly" },
+  talent_on_tour: { instructors: [] },
+  age_policy: { minimum_age: 0, mode: "soft" as const },
+};
 
 export async function getSettings(
   shopId: string
@@ -19,45 +40,33 @@ export async function getSettings(
   const { data, error } = await supabase
     .from("shops")
     .select(
-      "greeting, voice_id, business_hours_json, services_json, booking_buffer_minutes, off_hours_behavior"
+      "greeting, voice_id, business_hours_json, services_json, booking_buffer_minutes, off_hours_behavior, public_phone, address, languages_json, rentals_json, cancellation_policy_json, payment_portal_json, escalation_json, talent_on_tour_json, age_policy_json"
     )
     .eq("id", shopId)
     .single();
 
   if (error || !data) return { settings: null };
 
-  const rawServices = data.services_json || [];
+  const row = data as any;
+  const rawServices = row.services_json || [];
   const normalizedServices = normalizeServices(rawServices);
 
-  console.log("Settings services_json type:", typeof data.services_json);
-  console.log(
-    "Settings services_json isArray:",
-    Array.isArray(data.services_json)
-  );
-  console.log(
-    "Settings services_json raw:",
-    JSON.stringify(data.services_json)
-  );
-  console.log(
-    "Settings services_json first:",
-    JSON.stringify((data.services_json as any)?.[0] ?? null)
-  );
-  console.log(
-    "Settings services_json first keys:",
-    JSON.stringify(Object.keys(((data.services_json as any)?.[0] ?? {}) as object))
-  );
-  console.log(
-    "Settings services normalized:",
-    JSON.stringify(normalizedServices)
-  );
-
   const parsed = ShopSettingsSchema.safeParse({
-    greeting: data.greeting,
-    voice_id: data.voice_id,
-    business_hours: data.business_hours_json,
+    greeting: row.greeting,
+    voice_id: row.voice_id,
+    business_hours: row.business_hours_json,
     services: normalizedServices,
-    booking_buffer_minutes: data.booking_buffer_minutes,
-    off_hours_behavior: data.off_hours_behavior,
+    booking_buffer_minutes: row.booking_buffer_minutes,
+    off_hours_behavior: row.off_hours_behavior,
+    public_phone: row.public_phone,
+    address: row.address,
+    languages: row.languages_json ?? DEFAULTS.languages,
+    rentals: row.rentals_json ?? DEFAULTS.rentals,
+    cancellation_policy: row.cancellation_policy_json ?? DEFAULTS.cancellation_policy,
+    payment_portal: row.payment_portal_json ?? DEFAULTS.payment_portal,
+    escalation: row.escalation_json ?? DEFAULTS.escalation,
+    talent_on_tour: row.talent_on_tour_json ?? DEFAULTS.talent_on_tour,
+    age_policy: row.age_policy_json ?? DEFAULTS.age_policy,
   });
 
   if (!parsed.success) {
@@ -84,8 +93,20 @@ export async function updateSettings(
     allowed.booking_buffer_minutes = partial.booking_buffer_minutes;
   if (partial.off_hours_behavior !== undefined)
     allowed.off_hours_behavior = partial.off_hours_behavior;
+  if (partial.public_phone !== undefined) allowed.public_phone = partial.public_phone;
+  if (partial.address !== undefined) allowed.address = partial.address;
+  if (partial.languages !== undefined) allowed.languages_json = partial.languages;
+  if (partial.rentals !== undefined) allowed.rentals_json = partial.rentals;
+  if (partial.cancellation_policy !== undefined)
+    allowed.cancellation_policy_json = partial.cancellation_policy;
+  if (partial.payment_portal !== undefined) allowed.payment_portal_json = partial.payment_portal;
+  if (partial.escalation !== undefined) allowed.escalation_json = partial.escalation;
+  if (partial.talent_on_tour !== undefined) allowed.talent_on_tour_json = partial.talent_on_tour;
+  if (partial.age_policy !== undefined) allowed.age_policy_json = partial.age_policy;
 
-  // Merge services with original to preserve voice-bridge fields (slug, teacher)
+  // Merge services with original to preserve voice-bridge fields (slug,
+  // teacher) and write through every editable field — including price,
+  // which the previous version silently dropped.
   if (partial.services !== undefined) {
     const { data: original } = await supabase
       .from("shops")
@@ -97,13 +118,20 @@ export async function updateSettings(
       (original?.services_json || []).map((s: any) => [s.slug || s.id, s])
     );
 
-    allowed.services_json = partial.services.map((newSvc) => {
-      const oldSvc = originalMap.get(newSvc.id) || {};
+    allowed.services_json = partial.services.map((newSvc: ShopSettings["services"][number]) => {
+      const oldSvc = (originalMap.get(newSvc.id) as any) || {};
       return {
         ...oldSvc,
+        id: newSvc.id,
+        slug: oldSvc.slug || newSvc.id,
         name: newSvc.name,
         duration_min: newSvc.duration_minutes,
+        duration_minutes: newSvc.duration_minutes,
+        price: newSvc.price ?? null,
         active: newSvc.active,
+        instructor: newSvc.instructor ?? null,
+        mode: newSvc.mode || "both",
+        is_lesson: newSvc.is_lesson,
       };
     });
   }
