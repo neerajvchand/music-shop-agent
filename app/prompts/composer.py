@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -12,11 +13,18 @@ from app.prompts.registry import PromptRegistry
 logger = logging.getLogger(__name__)
 
 SEPARATOR = "\n\n---\n\n"
+_UNSUBSTITUTED_PATTERN = re.compile(r"\{\{[a-zA-Z_][a-zA-Z0-9_]*\}\}")
 
 
 @dataclass
 class CallContext:
-    """Runtime context for prompt composition."""
+    """Runtime context for prompt composition.
+
+    Settings-derived fields (`*_text`, `shop_*`, `greeting`, etc.) are
+    pre-rendered strings ready for direct `{{placeholder}}` substitution.
+    They are populated from the shop row at call setup so any change in the
+    Settings dashboard is reflected on the next call without code changes.
+    """
 
     shop_id: str
     vertical: str | None
@@ -28,6 +36,21 @@ class CallContext:
     staff_status: dict[str, Any] = field(default_factory=dict)
     test_mode: bool = False
     resume_draft: dict[str, Any] | None = None
+
+    # Settings-derived prompt placeholders (rendered from the shop row).
+    shop_name: str = ""
+    shop_phone: str = ""
+    shop_address: str = ""
+    greeting: str = ""
+    business_hours_text: str = ""
+    services_text: str = ""
+    languages_text: str = ""
+    rentals_text: str = ""
+    cancellation_policy_text: str = ""
+    payment_portal_text: str = ""
+    escalation_text: str = ""
+    talent_on_tour_text: str = ""
+    age_policy_text: str = ""
 
 
 def compose(context: CallContext, bindings: list[dict[str, Any]] | None = None) -> tuple[str, list[dict[str, Any]]]:
@@ -73,7 +96,58 @@ def compose(context: CallContext, bindings: list[dict[str, Any]] | None = None) 
         sections.append(f"## RESUMED DRAFT\nThe caller was previously booking and disconnected. Here is what was already captured: {json.dumps(context.resume_draft)}")
 
     full_prompt = SEPARATOR.join(sections)
+
+    # Guard: scrub any surviving {{placeholder}} from the prompt so the agent
+    # never literally speaks "{{shop_phone}}". Logs each survivor with the
+    # call's shop id so the gap is visible in deploy logs.
+    survivors = _UNSUBSTITUTED_PATTERN.findall(full_prompt)
+    if survivors:
+        logger.warning(
+            "compose: unsubstituted placeholders for shop=%s: %s",
+            context.shop_id, sorted(set(survivors)),
+        )
+        full_prompt = _UNSUBSTITUTED_PATTERN.sub("", full_prompt)
+
     return full_prompt, tools
+
+
+def build_call_context_from_shop(
+    shop: Any,
+    *,
+    caller_phone: str | None,
+    today: str,
+    resume_draft: dict[str, Any] | None = None,
+) -> CallContext:
+    """Hydrate a CallContext from a Shop row.
+
+    Each settings-derived field is rendered through `app.prompts.renderers`.
+    Renderer failures yield empty strings (logged) rather than crashing call
+    setup — the agent should keep working even if one settings field is
+    malformed in the database.
+    """
+    from app.prompts import renderers
+
+    return CallContext(
+        shop_id=shop.id,
+        vertical=getattr(shop, "vertical_slug", None),
+        caller_phone=caller_phone,
+        today=today,
+        test_mode=bool(getattr(shop, "test_mode", False)),
+        resume_draft=resume_draft,
+        shop_name=getattr(shop, "name", "") or "",
+        shop_phone=getattr(shop, "public_phone", None) or getattr(shop, "owner_phone", "") or "",
+        shop_address=getattr(shop, "address", None) or "",
+        greeting=getattr(shop, "greeting", "") or "",
+        business_hours_text=renderers.render_business_hours(getattr(shop, "business_hours_json", None)),
+        services_text=renderers.render_services(getattr(shop, "services_json", None)),
+        languages_text=renderers.render_languages(getattr(shop, "languages_json", None)),
+        rentals_text=renderers.render_rentals(getattr(shop, "rentals_json", None)),
+        cancellation_policy_text=renderers.render_cancellation_policy(getattr(shop, "cancellation_policy_json", None)),
+        payment_portal_text=renderers.render_payment_portal(getattr(shop, "payment_portal_json", None)),
+        escalation_text=renderers.render_escalation(getattr(shop, "escalation_json", None)),
+        talent_on_tour_text=renderers.render_talent_on_tour(getattr(shop, "talent_on_tour_json", None)),
+        age_policy_text=renderers.render_age_policy(getattr(shop, "age_policy_json", None)),
+    )
 
 
 def _render_module(module: dict[str, Any], context: CallContext) -> str:
