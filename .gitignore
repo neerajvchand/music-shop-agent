@@ -51,4 +51,5 @@ htmlcov/
 /dashboard/.next/
 /dashboard/out/
 /dashboard/.env.local
+/dashboard/tsconfig.tsbuildinfo
 
