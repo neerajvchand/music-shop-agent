@@ -173,6 +173,7 @@ class BookingStateMachine:
         from app.supabase_client import get_supabase
         try:
             get_supabase().table("call_events").insert({
+                "shop_id": self.draft.shop_id,
                 "call_sid": self.draft.call_sid,
                 "event_type": event_type,
                 "payload_json": payload,
