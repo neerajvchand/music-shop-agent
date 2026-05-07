@@ -407,6 +407,8 @@ async def _handle_function_call(
         return
 
     if fn_name == "book_appointment":
+        from app.booking.validation import validate_book_appointment_args
+
         service = args.get("service", "")
         date_str = args.get("date", "")
         time_str = args.get("time", "")
@@ -414,71 +416,84 @@ async def _handle_function_call(
         customer_phone = args.get("customer_phone", "")
         notes = args.get("notes", "")
 
-        logger.info("book_appointment: %s for %s on %s %s (call=%s)", service, customer_name, date_str, time_str, call_state.call_sid if call_state else "?")
+        logger.info(
+            "book_appointment: %s for %s on %s %s (call=%s)",
+            service, customer_name, date_str, time_str,
+            call_state.call_sid if call_state else "?",
+        )
 
-        if shop and booking_sm:
-            try:
-                from datetime import datetime
-                scheduled_at = datetime.fromisoformat(f"{date_str}T{time_str}")
-                booking = await atomic_book(
-                    shop=shop,
-                    service=service,
-                    start=scheduled_at,
-                    customer_name=customer_name,
-                    customer_phone=customer_phone,
-                    notes=notes,
-                    test_mode=shop.test_mode,
-                )
-                await deepgram.send_function_call_response(
-                    fn_id, "book_appointment",
-                    json.dumps({"status": "booked", "booking_id": booking.get("id"), "message": "Appointment confirmed."}),
-                )
-
-                # Transition conversation state
-                if conversation_sm:
-                    conversation_sm.transition(StateTransition.BOOKING_FINALIZED, ConversationState.FAREWELL)
-
-                # Send owner alert
-                await send_owner_alert(shop, "first_time_customer" if True else "all_bookings", {
-                    "customer_name": customer_name,
-                    "service": service,
-                    "scheduled_at": f"{date_str} {time_str}",
-                })
-
-                # Send customer confirmation SMS
-                if customer_phone:
-                    from app.sms.templates import render_confirmation
-                    body = render_confirmation(shop, service, f"{date_str} at {time_str}")
-                    await send_sms(customer_phone, body)
-
-            except BookingConflictError as e:
-                await deepgram.send_function_call_response(
-                    fn_id, "book_appointment",
-                    json.dumps({"status": "conflict", "message": str(e)}),
-                )
-            except CalendarWriteError as e:
-                await deepgram.send_function_call_response(
-                    fn_id, "book_appointment",
-                    json.dumps({"status": "error", "message": str(e)}),
-                )
-                if shop:
-                    await create_decision(
-                        shop_id=shop.id,
-                        decision_type="connect_calendar",
-                        title="Calendar connection failed",
-                        body=f"Could not write booking to Google Calendar: {e}",
-                        context={"call_sid": call_state.call_sid if call_state else None},
-                    )
-            except Exception as e:
-                logger.error("book_appointment failed: %s", e)
-                await deepgram.send_function_call_response(
-                    fn_id, "book_appointment",
-                    json.dumps({"status": "error", "message": "Internal error. Please try again."}),
-                )
-        else:
+        if not (shop and booking_sm):
             await deepgram.send_function_call_response(
                 fn_id, "book_appointment",
-                json.dumps({"status": "error", "message": "Shop not available."}),
+                json.dumps({"error": "shop_unavailable", "message": "Shop not available."}),
+            )
+            return
+
+        caller_phone = booking_sm.draft.caller_phone if booking_sm else None
+        scheduled_at, validation_error = validate_book_appointment_args(
+            args, shop, caller_phone=caller_phone,
+        )
+        if validation_error is not None:
+            logger.info("book_appointment validation rejected: %s", validation_error["error"])
+            await deepgram.send_function_call_response(
+                fn_id, "book_appointment", json.dumps(validation_error),
+            )
+            return
+
+        # Use the Twilio-provided number when the LLM didn't re-collect one.
+        effective_phone = customer_phone or caller_phone or ""
+
+        try:
+            booking = await atomic_book(
+                shop=shop,
+                service=service,
+                start=scheduled_at,
+                customer_name=customer_name,
+                customer_phone=effective_phone,
+                notes=notes,
+                test_mode=shop.test_mode,
+            )
+            await deepgram.send_function_call_response(
+                fn_id, "book_appointment",
+                json.dumps({"status": "booked", "booking_id": booking.get("id"), "message": "Appointment confirmed."}),
+            )
+
+            if conversation_sm:
+                conversation_sm.transition(StateTransition.BOOKING_FINALIZED, ConversationState.FAREWELL)
+
+            await send_owner_alert(shop, "first_time_customer" if True else "all_bookings", {
+                "customer_name": customer_name,
+                "service": service,
+                "scheduled_at": f"{date_str} {time_str}",
+            })
+
+            if effective_phone:
+                from app.sms.templates import render_confirmation
+                body = render_confirmation(shop, service, f"{date_str} at {time_str}")
+                await send_sms(effective_phone, body)
+
+        except BookingConflictError as e:
+            await deepgram.send_function_call_response(
+                fn_id, "book_appointment",
+                json.dumps({"error": "conflict", "message": str(e)}),
+            )
+        except CalendarWriteError as e:
+            await deepgram.send_function_call_response(
+                fn_id, "book_appointment",
+                json.dumps({"error": "calendar_write_failed", "message": str(e)}),
+            )
+            await create_decision(
+                shop_id=shop.id,
+                decision_type="connect_calendar",
+                title="Calendar connection failed",
+                body=f"Could not write booking to Google Calendar: {e}",
+                context={"call_sid": call_state.call_sid if call_state else None},
+            )
+        except Exception as e:
+            logger.error("book_appointment failed: %s", e)
+            await deepgram.send_function_call_response(
+                fn_id, "book_appointment",
+                json.dumps({"error": "internal_error", "message": "Something went wrong on our end. Could we try once more?"}),
             )
         return
 

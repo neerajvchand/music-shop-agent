@@ -128,11 +128,25 @@ class StateMachine:
 
 
 def _persist_event(call_sid: str, shop_id: str, transition: StateTransition, target: ConversationState) -> None:
-    """Write transition to call_events table."""
+    """Write transition to call_events table.
+
+    Drops the event if shop_id is missing — better to lose audit rows than
+    to insert "unknown" placeholders that silently corrupt the trail.
+    """
+    if not shop_id or not str(shop_id).strip():
+        logger.error(
+            "_persist_event called without shop_id, dropping event "
+            "(call_sid=%s transition=%s target=%s)",
+            call_sid,
+            transition.value if transition else None,
+            target.value if target else None,
+        )
+        return
+
     from app.supabase_client import get_supabase
 
     get_supabase().table("call_events").insert({
-        "shop_id": shop_id or "unknown",
+        "shop_id": shop_id,
         "call_sid": call_sid,
         "event_type": "state_transition",
         "payload_json": {
