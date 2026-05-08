@@ -10,6 +10,7 @@ from typing import AsyncGenerator
 import websockets
 from websockets.asyncio.client import ClientConnection
 
+from app.config import settings
 from app.prompts.composer import CallContext, compose
 from app.shops import Shop
 
@@ -17,6 +18,22 @@ logger = logging.getLogger(__name__)
 
 DEEPGRAM_AGENT_URL = "wss://agent.deepgram.com/v1/agent/converse"
 KEEPALIVE_INTERVAL = 5  # seconds
+
+
+def _speak_provider(voice_id: str) -> dict:
+    """Build the speak.provider block. The TTS rate multiplier comes from
+    settings.tts_speech_rate (env: TTS_SPEECH_RATE). Deepgram silently
+    ignores unrecognized fields, so if `rate` ends up in the wrong place
+    this still won't break the connection — the test call will simply
+    sound like the default rate."""
+    provider: dict = {
+        "type": "deepgram",
+        "model": voice_id,
+    }
+    rate = getattr(settings, "tts_speech_rate", 1.0)
+    if rate and rate != 1.0:
+        provider["rate"] = float(rate)
+    return provider
 
 
 class DeepgramAgentClient:
@@ -87,10 +104,7 @@ class DeepgramAgentClient:
                     "functions": functions,
                 },
                 "speak": {
-                    "provider": {
-                        "type": "deepgram",
-                        "model": self._shop.voice_id,
-                    },
+                    "provider": _speak_provider(self._shop.voice_id),
                 },
                 "greeting": self._shop.greeting,
             },
