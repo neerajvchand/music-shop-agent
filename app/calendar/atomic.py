@@ -1,3 +1,6 @@
+# DEPRECATED — calendar interactions go through Vercel HMAC endpoints since migration 024.
+# This file is no longer imported anywhere. Kept for reference; safe to delete in a future cleanup PR.
+
 """Atomic booking: check → reserve → confirm → write → commit."""
 
 from __future__ import annotations

@@ -13,7 +13,13 @@ from fastapi import WebSocket, WebSocketDisconnect
 from app.audio import build_clear_message, decode_twilio_media, encode_for_twilio
 from app.booking.persistence import load_draft, save_draft
 from app.booking.state import BookingStateMachine
-from app.calendar.atomic import atomic_book, BookingConflictError, CalendarWriteError
+from app.booking.validation import (
+    DEFAULT_DURATION_MIN,
+    _find_service,
+    _service_duration_minutes,
+    validate_book_appointment_args,
+)
+from app.calendar.agent_client import AgentApiError, check_availability as agent_check_availability, create_booking as agent_create_booking
 from app.call_logger import log_call
 from app.config import settings
 from app.deepgram_client import DeepgramAgentClient
@@ -391,110 +397,12 @@ async def _handle_function_call(
         return
 
     if fn_name == "check_availability":
-        service = args.get("service", "")
-        date_str = args.get("date", "")
-        time_str = args.get("time", "")
-        logger.info("check_availability: %s %s %s (call=%s)", service, date_str, time_str, call_state.call_sid if call_state else "?")
-
-        if shop and conversation_sm:
-            conversation_sm.transition(StateTransition.SLOT_PROPOSED, ConversationState.SLOT_CAPTURE)
-
-        # Simple response for now — full implementation would query calendar
-        await deepgram.send_function_call_response(
-            fn_id, "check_availability",
-            json.dumps({"available": True, "message": f"{date_str} at {time_str} is available."}),
-        )
+        await _handle_check_availability(fn_id, args, deepgram, shop, conversation_sm, call_state)
         return
 
-    if fn_name == "book_appointment":
-        from app.booking.validation import validate_book_appointment_args
-
-        service = args.get("service", "")
-        date_str = args.get("date", "")
-        time_str = args.get("time", "")
-        customer_name = args.get("customer_name", "")
-        customer_phone = args.get("customer_phone", "")
-        notes = args.get("notes", "")
-
-        logger.info(
-            "book_appointment: %s for %s on %s %s (call=%s)",
-            service, customer_name, date_str, time_str,
-            call_state.call_sid if call_state else "?",
-        )
-
-        if not (shop and booking_sm):
-            await deepgram.send_function_call_response(
-                fn_id, "book_appointment",
-                json.dumps({"error": "shop_unavailable", "message": "Shop not available."}),
-            )
-            return
-
-        caller_phone = booking_sm.draft.caller_phone if booking_sm else None
-        scheduled_at, validation_error = validate_book_appointment_args(
-            args, shop, caller_phone=caller_phone,
-        )
-        if validation_error is not None:
-            logger.info("book_appointment validation rejected: %s", validation_error["error"])
-            await deepgram.send_function_call_response(
-                fn_id, "book_appointment", json.dumps(validation_error),
-            )
-            return
-
-        # Use the Twilio-provided number when the LLM didn't re-collect one.
-        effective_phone = customer_phone or caller_phone or ""
-
-        try:
-            booking = await atomic_book(
-                shop=shop,
-                service=service,
-                start=scheduled_at,
-                customer_name=customer_name,
-                customer_phone=effective_phone,
-                notes=notes,
-                test_mode=shop.test_mode,
-            )
-            await deepgram.send_function_call_response(
-                fn_id, "book_appointment",
-                json.dumps({"status": "booked", "booking_id": booking.get("id"), "message": "Appointment confirmed."}),
-            )
-
-            if conversation_sm:
-                conversation_sm.transition(StateTransition.BOOKING_FINALIZED, ConversationState.FAREWELL)
-
-            await send_owner_alert(shop, "first_time_customer" if True else "all_bookings", {
-                "customer_name": customer_name,
-                "service": service,
-                "scheduled_at": f"{date_str} {time_str}",
-            })
-
-            if effective_phone:
-                from app.sms.templates import render_confirmation
-                body = render_confirmation(shop, service, f"{date_str} at {time_str}")
-                await send_sms(effective_phone, body)
-
-        except BookingConflictError as e:
-            await deepgram.send_function_call_response(
-                fn_id, "book_appointment",
-                json.dumps({"error": "conflict", "message": str(e)}),
-            )
-        except CalendarWriteError as e:
-            await deepgram.send_function_call_response(
-                fn_id, "book_appointment",
-                json.dumps({"error": "calendar_write_failed", "message": str(e)}),
-            )
-            await create_decision(
-                shop_id=shop.id,
-                decision_type="connect_calendar",
-                title="Calendar connection failed",
-                body=f"Could not write booking to Google Calendar: {e}",
-                context={"call_sid": call_state.call_sid if call_state else None},
-            )
-        except Exception as e:
-            logger.error("book_appointment failed: %s", e)
-            await deepgram.send_function_call_response(
-                fn_id, "book_appointment",
-                json.dumps({"error": "internal_error", "message": "Something went wrong on our end. Could we try once more?"}),
-            )
+    if fn_name == "create_booking" or fn_name == "book_appointment":
+        # TODO(v4): drop book_appointment alias once no in-flight prompts reference it.
+        await _handle_create_booking(fn_id, fn_name, args, deepgram, shop, booking_sm, conversation_sm, call_state)
         return
 
     if fn_name == "collect_slot":
@@ -544,6 +452,202 @@ async def _handle_function_call(
         return
 
     logger.warning("Unhandled FunctionCallRequest: %s (client_side=%s)", fn_name, client_side)
+
+
+def _normalize_create_booking_args(args: dict) -> dict:
+    """Accept both legacy book_appointment (date+time) and create_booking (start_time) shapes.
+
+    Returns a dict the validator can consume directly: must contain `date` and
+    `time` keys for the validator's parser. The original args are mutated only
+    if start_time was provided in ISO 8601 form.
+    """
+    out = dict(args)
+
+    # New-style: start_time is "YYYY-MM-DDTHH:MM[:SS][±HH:MM]". Split into
+    # date + time so the validator's existing fromisoformat path still works.
+    if not out.get("date") and out.get("start_time"):
+        start = str(out["start_time"]).strip()
+        if "T" in start:
+            date_part, time_part = start.split("T", 1)
+            # Drop any timezone suffix the validator's naive parser can't handle.
+            for sep in ("+", "Z"):
+                if sep in time_part:
+                    time_part = time_part.split(sep, 1)[0]
+            out["date"] = date_part
+            out["time"] = time_part.split(".")[0]
+
+    # caller_name / caller_phone (new) → customer_name / customer_phone (validator).
+    if not out.get("customer_name") and out.get("caller_name"):
+        out["customer_name"] = out["caller_name"]
+    if not out.get("customer_phone") and out.get("caller_phone"):
+        out["customer_phone"] = out["caller_phone"]
+    return out
+
+
+async def _handle_check_availability(
+    fn_id: str,
+    args: dict,
+    deepgram: DeepgramAgentClient,
+    shop: Shop | None,
+    conversation_sm,
+    call_state: BridgeCallStateTracker | None,
+) -> None:
+    service_slug = args.get("service", "")
+    date_str = args.get("date", "")
+    logger.info(
+        "check_availability: service=%s date=%s (call=%s)",
+        service_slug, date_str, call_state.call_sid if call_state else "?",
+    )
+
+    if not shop:
+        await deepgram.send_function_call_response(
+            fn_id, "check_availability",
+            json.dumps({"error": "shop_unavailable", "message": "I'm having trouble loading shop info."}),
+        )
+        return
+
+    if not service_slug or not date_str:
+        await deepgram.send_function_call_response(
+            fn_id, "check_availability",
+            json.dumps({"error": "missing_args", "message": "I need both a service and a date to check availability."}),
+        )
+        return
+
+    svc = _find_service(shop, service_slug)
+    if svc is None and shop.services_json:
+        await deepgram.send_function_call_response(
+            fn_id, "check_availability",
+            json.dumps({"error": "missing_service", "message": "I couldn't find that service in our catalog — could you confirm what you're looking for?"}),
+        )
+        return
+    duration_minutes = _service_duration_minutes(svc) if svc else DEFAULT_DURATION_MIN
+
+    if conversation_sm:
+        conversation_sm.transition(StateTransition.SLOT_PROPOSED, ConversationState.SLOT_CAPTURE)
+
+    try:
+        result = await agent_check_availability(
+            shop.id,
+            date=date_str,
+            duration_minutes=duration_minutes,
+            timezone=shop.timezone,
+        )
+    except AgentApiError as e:
+        logger.warning("check_availability agent_api error: %s", e)
+        await deepgram.send_function_call_response(
+            fn_id, "check_availability",
+            json.dumps({
+                "error": "calendar_unavailable",
+                "message": "I'm having trouble checking the calendar right now — would you like someone to follow up?",
+            }),
+        )
+        return
+
+    slots = result.get("slots", [])
+    payload: dict = {"slots": slots, "duration_minutes": duration_minutes}
+    if not slots:
+        # Try to give the LLM a hint why. Vercel may include a reason; otherwise
+        # fall back to a generic so the agent doesn't loop offering times.
+        payload["reason"] = result.get("reason") or "fully_booked"
+    await deepgram.send_function_call_response(
+        fn_id, "check_availability", json.dumps(payload),
+    )
+
+
+async def _handle_create_booking(
+    fn_id: str,
+    fn_name: str,
+    args: dict,
+    deepgram: DeepgramAgentClient,
+    shop: Shop | None,
+    booking_sm: BookingStateMachine | None,
+    conversation_sm,
+    call_state: BridgeCallStateTracker | None,
+) -> None:
+    if not shop:
+        await deepgram.send_function_call_response(
+            fn_id, fn_name,
+            json.dumps({"error": "shop_unavailable", "message": "Shop not available."}),
+        )
+        return
+
+    norm = _normalize_create_booking_args(args)
+    caller_phone = booking_sm.draft.caller_phone if booking_sm else None
+
+    scheduled_at, validation_error = validate_book_appointment_args(
+        norm, shop, caller_phone=caller_phone,
+    )
+    if validation_error is not None:
+        logger.info("create_booking validation rejected: %s", validation_error["error"])
+        await deepgram.send_function_call_response(
+            fn_id, fn_name, json.dumps(validation_error),
+        )
+        return
+
+    service_slug = norm.get("service", "")
+    customer_name = norm.get("customer_name", "") or ""
+    customer_phone = norm.get("customer_phone") or caller_phone or ""
+    notes = norm.get("notes", "") or ""
+
+    svc = _find_service(shop, service_slug)
+    duration_minutes = _service_duration_minutes(svc) if svc else DEFAULT_DURATION_MIN
+
+    logger.info(
+        "create_booking: %s for %s at %s (call=%s)",
+        service_slug, customer_name, scheduled_at.isoformat(),
+        call_state.call_sid if call_state else "?",
+    )
+
+    try:
+        result = await agent_create_booking(
+            shop.id,
+            customer_name=customer_name,
+            customer_phone=customer_phone,
+            service=service_slug,
+            start_time=scheduled_at.isoformat(),
+            duration_minutes=duration_minutes,
+            notes=notes or None,
+        )
+    except AgentApiError as e:
+        if e.status == 409:
+            await deepgram.send_function_call_response(
+                fn_id, fn_name,
+                json.dumps({"error": "slot_taken", "message": "That time was just booked. Want to pick another?"}),
+            )
+            return
+        logger.warning("create_booking agent_api error: %s", e)
+        # TODO(phase-3b): surface pending_sync rows in dashboard "Needs Attention" list with a retry action
+        await deepgram.send_function_call_response(
+            fn_id, fn_name,
+            json.dumps({
+                "error": "calendar_unavailable",
+                "message": "I'm having trouble booking that right now — would you like someone to follow up?",
+            }),
+        )
+        return
+
+    booking_id = result.get("bookingId") or result.get("booking_id")
+
+    await deepgram.send_function_call_response(
+        fn_id, fn_name,
+        json.dumps({
+            "success": True,
+            "booking_id": booking_id,
+            "message": "Appointment confirmed.",
+        }),
+    )
+
+    if conversation_sm:
+        conversation_sm.transition(StateTransition.BOOKING_FINALIZED, ConversationState.FAREWELL)
+
+    try:
+        await send_owner_alert(shop, "first_time_customer", {
+            "customer_name": customer_name,
+            "service": service_slug,
+            "scheduled_at": scheduled_at.isoformat(),
+        })
+    except Exception as e:
+        logger.warning("send_owner_alert failed: %s", e)
 
 
 async def _farewell_safety_watchdog(

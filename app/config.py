@@ -25,6 +25,16 @@ class Settings(BaseSettings):
     app_base_url: str
     log_level: str = "INFO"
 
+    # URL of the Vercel dashboard service that hosts the HMAC-authenticated
+    # /api/agent/* endpoints. Required as of Phase 2 — Railway calls Vercel
+    # for all calendar operations. Production: https://music-shop-agent.vercel.app
+    dashboard_base_url: str = ""
+
+    # Shared secret for the HMAC handshake between Railway agent and Vercel
+    # /api/agent/* routes. Must match the AGENT_API_SECRET env var set on
+    # Vercel. Both sides sign `f"{shop_id}:{timestamp_ms}"` with SHA256 hex.
+    agent_api_secret: str = ""
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 

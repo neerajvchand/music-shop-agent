@@ -4,6 +4,11 @@ import { refreshIfNeeded } from "@/lib/integrations/refresh";
 import { getProvider } from "@/lib/integrations/registry";
 import { createServiceClient } from "@/lib/supabase";
 import { logIntegrationEvent } from "@/lib/integrations/events";
+import {
+  validateBookAppointmentArgs,
+  type BusinessHours,
+  type ServiceCatalogEntry,
+} from "@/lib/booking/validation";
 
 export async function POST(request: NextRequest) {
   const auth = verifyAgentRequest(request);
@@ -19,47 +24,96 @@ export async function POST(request: NextRequest) {
     notes,
   } = body;
 
-  if (!customerName || !service || !startTime || !durationMinutes) {
+  // Pull settings the validator needs + test_mode + gcal_calendar_id.
+  const supabase = createServiceClient();
+  const { data: shopRow, error: shopErr } = await supabase
+    .from("shops")
+    .select("timezone, business_hours_json, services_json, booking_buffer_minutes, gcal_calendar_id, test_mode")
+    .eq("id", auth.shopId)
+    .single();
+
+  if (shopErr || !shopRow) {
     return NextResponse.json(
-      { error: "Missing required booking fields" },
-      { status: 400 }
+      { error: "shop_not_found", message: "Shop not found." },
+      { status: 404 }
     );
   }
 
-  const supabase = createServiceClient();
+  const shop = shopRow as {
+    timezone: string | null;
+    business_hours_json: BusinessHours | null;
+    services_json: ServiceCatalogEntry[] | null;
+    booking_buffer_minutes: number | null;
+    gcal_calendar_id: string | null;
+    test_mode: boolean | null;
+  };
 
-  // 1. Lock the slot in the database first
+  // Defense-in-depth validation. Same shape as the Python validator.
+  const validation = validateBookAppointmentArgs(
+    {
+      service,
+      customerPhone,
+      startTime,
+      durationMinutes,
+    },
+    shop,
+    null,
+  );
+  if (!validation.ok) {
+    return NextResponse.json(validation.error, { status: 400 });
+  }
+
+  const finalDuration = validation.durationMinutes;
+
+  // Atomic guard: insert reserved → write Google → confirm.
   const { data: bookingRow, error: insertError } = await supabase
     .from("bookings")
     .insert({
       shop_id: auth.shopId,
       service,
       scheduled_at: startTime,
-      duration_min: parseInt(durationMinutes, 10),
+      duration_min: finalDuration,
       customer_name: customerName,
       customer_phone: customerPhone || null,
       notes: notes || null,
+      status: "reserved",
     })
     .select("id")
     .single();
 
   if (insertError) {
-    // Unique violation = slot already taken
     if (insertError.code === "23505") {
       return NextResponse.json(
-        { error: "slot_taken" },
+        {
+          error: "slot_taken",
+          message: "That time was just booked. Want to pick another?",
+        },
         { status: 409 }
       );
     }
     return NextResponse.json(
-      { error: insertError.message },
+      { error: "insert_failed", message: insertError.message },
       { status: 500 }
     );
   }
 
   const bookingId = bookingRow.id;
 
-  // 2. Create Google Calendar event
+  // Test mode short-circuit: no Google call, mark test_confirmed.
+  if (shop.test_mode) {
+    await supabase
+      .from("bookings")
+      .update({ status: "test_confirmed" })
+      .eq("id", bookingId);
+
+    return NextResponse.json({
+      success: true,
+      bookingId,
+      test_mode: true,
+    });
+  }
+
+  // Real Google write.
   try {
     await refreshIfNeeded(auth.shopId, "google_calendar");
     const provider = getProvider("google_calendar")!;
@@ -69,7 +123,7 @@ export async function POST(request: NextRequest) {
       customerPhone: customerPhone || "",
       service,
       startTime,
-      durationMinutes: parseInt(durationMinutes, 10),
+      durationMinutes: finalDuration,
       notes,
     });
 
@@ -77,10 +131,12 @@ export async function POST(request: NextRequest) {
       throw new Error(result.error || "Google Calendar booking failed");
     }
 
-    // Update local booking with GCal event ID
     await supabase
       .from("bookings")
-      .update({ gcal_event_id: result.providerEventId })
+      .update({
+        status: "confirmed",
+        gcal_event_id: result.providerEventId,
+      })
       .eq("id", bookingId);
 
     return NextResponse.json({
@@ -89,18 +145,28 @@ export async function POST(request: NextRequest) {
       providerEventId: result.providerEventId,
     });
   } catch (e: any) {
-    // 3. Rollback: delete the local booking
-    await supabase.from("bookings").delete().eq("id", bookingId);
+    // TODO(phase-3b): surface pending_sync rows in dashboard "Needs Attention"
+    // list with a retry action. For now, leave the booking reserved and mark
+    // it pending_sync so it doesn't disappear from the owner's view.
+    await supabase
+      .from("bookings")
+      .update({ status: "pending_sync" })
+      .eq("id", bookingId);
 
     await logIntegrationEvent(auth.shopId, "google_calendar", "booking_failed", {
       error: e?.message || "Unknown error",
+      booking_id: bookingId,
       start_time: startTime,
       service,
     });
 
-    return NextResponse.json(
-      { error: e?.message || "Booking failed" },
-      { status: 500 }
-    );
+    // The Supabase reservation succeeded, so the slot is held; tell the agent
+    // the booking is recorded but flag the sync issue for ops follow-up.
+    return NextResponse.json({
+      success: true,
+      bookingId,
+      pending_sync: true,
+      message: "Booking recorded; calendar sync queued.",
+    });
   }
 }
