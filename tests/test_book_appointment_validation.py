@@ -31,6 +31,10 @@ class _FakeShop:
                 "saturday": {"open": "10:00", "close": "19:00"},
                 "sunday": None,
             },
+            services_json=[
+                {"slug": "tabla_lesson", "duration_minutes": 30, "active": True},
+                {"slug": "tabla_lesson_60", "duration_minutes": 60, "active": True},
+            ],
         )
         defaults.update(kw)
         for k, v in defaults.items():
@@ -203,3 +207,89 @@ def test_timezone_fallback_when_shop_timezone_invalid(caplog):
     assert error is None
     assert scheduled.tzinfo == ZoneInfo(DEFAULT_TIMEZONE)
     assert any("Not/A_Real_Zone" in rec.message for rec in caplog.records)
+
+
+# -------- duration-aware outside_business_hours --------
+
+def _next_open_day(weekday: int = 1) -> datetime:
+    """Return a future datetime on the requested weekday (Tue=1 by default)."""
+    target = datetime.now(tz=ZoneInfo("America/Los_Angeles")) + timedelta(days=1)
+    while target.weekday() != weekday:
+        target += timedelta(days=1)
+    return target
+
+
+def test_duration_aware_60min_at_18_00_passes():
+    """60-min appointment at 18:00 with close 19:00 fits exactly."""
+    target = _next_open_day()
+    args = {
+        "service": "tabla_lesson_60",
+        "date": target.date().isoformat(),
+        "time": "18:00",
+        "customer_phone": "+15555550000",
+    }
+    scheduled, error = validate_book_appointment_args(args, _FakeShop())
+    assert error is None, error
+    assert scheduled is not None
+
+
+def test_duration_aware_boundary_end_equals_close():
+    """End_time == close_time is permitted (not strictly greater than)."""
+    target = _next_open_day()
+    args = {
+        "service": "tabla_lesson_60",
+        "date": target.date().isoformat(),
+        "time": "18:00",
+        "customer_phone": "+15555550000",
+    }
+    # Tighten close to exactly match end. 18:00 + 60 = 19:00 = close.
+    scheduled, error = validate_book_appointment_args(args, _FakeShop())
+    assert error is None
+
+
+def test_duration_aware_post_close_fails_with_duration_message():
+    """60-min appointment at 18:30 with close 19:00 → outside_business_hours."""
+    target = _next_open_day()
+    args = {
+        "service": "tabla_lesson_60",
+        "date": target.date().isoformat(),
+        "time": "18:30",
+        "customer_phone": "+15555550000",
+    }
+    _, error = validate_book_appointment_args(args, _FakeShop())
+    assert error is not None
+    assert error["error"] == "outside_business_hours"
+    assert "60-minute" in error["message"]
+    assert "7pm" in error["message"]
+    # Should suggest an earlier start.
+    assert "earlier" in error["message"].lower() or "another day" in error["message"].lower()
+
+
+def test_service_slug_not_in_catalog_returns_missing_service():
+    """LLM hallucinated a slug not present in services_json."""
+    target = _next_open_day()
+    args = {
+        "service": "violin_lesson",  # not in catalog
+        "date": target.date().isoformat(),
+        "time": "14:00",
+        "customer_phone": "+15555550000",
+    }
+    _, error = validate_book_appointment_args(args, _FakeShop())
+    assert error is not None
+    assert error["error"] == "missing_service"
+    assert "couldn't find" in error["message"] or "catalog" in error["message"]
+
+
+def test_empty_services_json_falls_back_to_default_duration():
+    """Shop with no catalog still books, using DEFAULT_DURATION_MIN."""
+    target = _next_open_day()
+    args = {
+        "service": "any_service",
+        "date": target.date().isoformat(),
+        "time": "14:00",
+        "customer_phone": "+15555550000",
+    }
+    shop = _FakeShop(services_json=[])
+    scheduled, error = validate_book_appointment_args(args, shop)
+    assert error is None
+    assert scheduled is not None
