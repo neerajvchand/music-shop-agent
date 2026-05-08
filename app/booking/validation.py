@@ -1,5 +1,11 @@
 """Pure input validation for the book_appointment tool.
 
+DUAL-VALIDATOR PATTERN: This validator is duplicated between Python (this file)
+and TypeScript (dashboard/lib/booking/validation.ts) for defense-in-depth. If
+you modify one, modify the other to keep error codes and logic in sync. Drift
+between them produces inconsistent caller experiences depending on which entry
+point caught the error.
+
 The agent's `book_appointment` tool used to raise on bad input; the bridge
 caught the exception and returned an unstructured error string. The LLM had
 no way to recover.
@@ -21,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEZONE = "America/Los_Angeles"
 MAX_FUTURE_DAYS = 180
+DEFAULT_DURATION_MIN = 60
 
 _DAY_INDEX_TO_KEY = [
     "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
@@ -50,6 +57,15 @@ def _resolve_zone(shop: Any) -> ZoneInfo:
             "Shop timezone is missing; falling back to %s", DEFAULT_TIMEZONE,
         )
     return ZoneInfo(DEFAULT_TIMEZONE)
+
+
+def _format_h12(hour: int, minute: int = 0) -> str:
+    """Format an integer hour/minute as a natural 12-hour string."""
+    suffix = "am" if hour < 12 else "pm"
+    h12 = hour % 12 or 12
+    if minute == 0:
+        return f"{h12}{suffix}"
+    return f"{h12}:{minute:02d}{suffix}"
 
 
 def _format_closed_days(business_hours: dict) -> str:
@@ -90,23 +106,59 @@ def _hours_for_day(business_hours: dict, scheduled: datetime) -> dict | None:
     return None
 
 
-def _within_business_hours(business_hours: dict, scheduled: datetime) -> bool:
-    """True if `scheduled` (timezone-aware) falls inside the shop's open hours."""
+def _find_service(shop: Any, service_slug: str) -> dict | None:
+    """Look up a service by slug or id in shop.services_json."""
+    services = getattr(shop, "services_json", None) or []
+    if not isinstance(services, list):
+        return None
+    for s in services:
+        if not isinstance(s, dict):
+            continue
+        if s.get("slug") == service_slug or s.get("id") == service_slug:
+            return s
+    return None
+
+
+def _service_duration_minutes(svc: dict) -> int:
+    """Read duration in minutes from a service dict, supporting both keys."""
+    for key in ("duration_minutes", "duration_min"):
+        v = svc.get(key)
+        if isinstance(v, int) and v > 0:
+            return v
+    return DEFAULT_DURATION_MIN
+
+
+def _within_business_hours_with_duration(
+    business_hours: dict, scheduled: datetime, duration_minutes: int,
+) -> tuple[bool, dict | None]:
+    """True if `[scheduled, scheduled+duration]` fits inside the day's open hours.
+
+    Returns (ok, hours_entry) — hours_entry is the day's open/close dict on
+    success so the caller can format a duration-aware error message.
+    """
     if not isinstance(business_hours, dict) or not business_hours:
-        return True
+        return True, None
 
     entry = _hours_for_day(business_hours, scheduled)
     if entry is None:
-        return False
+        return False, None
 
     try:
         open_h, open_m = (int(p) for p in entry["open"].split(":"))
         close_h, close_m = (int(p) for p in entry["close"].split(":"))
     except (ValueError, KeyError, AttributeError):
-        return True
+        return True, entry
 
-    minute_of_day = scheduled.hour * 60 + scheduled.minute
-    return (open_h * 60 + open_m) <= minute_of_day <= (close_h * 60 + close_m)
+    start_minute = scheduled.hour * 60 + scheduled.minute
+    end_minute = start_minute + duration_minutes
+    open_minute = open_h * 60 + open_m
+    close_minute = close_h * 60 + close_m
+
+    if start_minute < open_minute:
+        return False, entry
+    if end_minute > close_minute:
+        return False, entry
+    return True, entry
 
 
 def validate_book_appointment_args(
@@ -126,7 +178,7 @@ def validate_book_appointment_args(
             "message": "I need to know which service you'd like to book — could you confirm what you're looking for?",
         }
 
-    customer_phone = args.get("customer_phone")
+    customer_phone = args.get("customer_phone") or args.get("caller_phone")
     if _missing(customer_phone) and _missing(caller_phone):
         return None, {
             "error": "missing_phone",
@@ -171,18 +223,49 @@ def validate_book_appointment_args(
             "message": "That's quite far out — could you confirm the date you meant?",
         }
 
+    # Resolve the service from the catalog. If services_json is configured and
+    # the LLM made up a slug, surface that as missing_service so it can ask the
+    # caller to clarify. If services_json is empty, fall back to the default
+    # duration so misconfigured shops still book.
+    services = getattr(shop, "services_json", None) or []
+    duration_minutes = DEFAULT_DURATION_MIN
+    if isinstance(services, list) and services:
+        svc = _find_service(shop, str(service))
+        if svc is None:
+            return None, {
+                "error": "missing_service",
+                "message": "I couldn't find that service in our catalog — could you confirm what you're looking for?",
+            }
+        duration_minutes = _service_duration_minutes(svc)
+
     business_hours = getattr(shop, "business_hours_json", None) or {}
-    if not _within_business_hours(business_hours, scheduled):
-        closed_phrase = _format_closed_days(business_hours)
-        open_phrase = _open_days_phrase(business_hours)
-        if closed_phrase and open_phrase:
-            message = f"We're closed {closed_phrase}. Would {open_phrase} work better?"
-        elif closed_phrase:
-            message = f"We're closed {closed_phrase}. Could you pick another day?"
-        elif open_phrase:
-            message = f"That's outside our hours. We're open {open_phrase} — what would work?"
+    ok, hours_entry = _within_business_hours_with_duration(
+        business_hours, scheduled, duration_minutes,
+    )
+    if not ok:
+        # Closed day vs. duration-overflow are different shapes of message.
+        if hours_entry is None:
+            closed_phrase = _format_closed_days(business_hours)
+            open_phrase = _open_days_phrase(business_hours)
+            if closed_phrase and open_phrase:
+                message = f"We're closed {closed_phrase}. Would {open_phrase} work better?"
+            elif closed_phrase:
+                message = f"We're closed {closed_phrase}. Could you pick another day?"
+            elif open_phrase:
+                message = f"That's outside our hours. We're open {open_phrase} — what would work?"
+            else:
+                message = "That's outside our hours. Could you pick another time?"
         else:
-            message = "That's outside our hours. Could you pick another time?"
+            try:
+                close_h, close_m = (int(p) for p in hours_entry["close"].split(":"))
+                close_str = _format_h12(close_h, close_m)
+            except Exception:
+                close_str = "close"
+            start_str = _format_h12(scheduled.hour, scheduled.minute)
+            message = (
+                f"A {duration_minutes}-minute appointment at {start_str} would run past our "
+                f"{close_str} close. Want to start earlier, or pick another day?"
+            )
         return None, {"error": "outside_business_hours", "message": message}
 
     return scheduled, None

@@ -1,3 +1,6 @@
+# DEPRECATED — calendar interactions go through Vercel HMAC endpoints since migration 024.
+# This file is no longer imported anywhere. Kept for reference; safe to delete in a future cleanup PR.
+
 """Google Calendar API client with OAuth token management."""
 
 from __future__ import annotations

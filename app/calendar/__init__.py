@@ -1,7 +1,17 @@
-"""Google Calendar integration for the voice agent."""
+"""Calendar integration for the voice agent.
 
-from app.calendar.client import CalendarClient, get_calendar_client
-from app.calendar.availability import get_free_slots, check_availability
-from app.calendar.atomic import atomic_book
+As of Phase 2, calendar operations route through Vercel via the HMAC
+agent client. Railway never holds Google OAuth tokens.
 
-__all__ = ["CalendarClient", "get_calendar_client", "get_free_slots", "check_availability", "atomic_book"]
+The legacy direct-Google modules (`client`, `availability`, `atomic`) are
+deprecated and no longer imported here. They remain on disk for reference
+and will be deleted in a future cleanup PR.
+"""
+
+from app.calendar.agent_client import (
+    AgentApiError,
+    check_availability,
+    create_booking,
+)
+
+__all__ = ["AgentApiError", "check_availability", "create_booking"]

@@ -44,12 +44,20 @@ async function getShopConfig(shopId: string) {
   const supabase = createServiceClient();
   const { data, error } = await supabase
     .from("shops")
-    .select("timezone, business_hours_json, booking_buffer_minutes")
+    .select(
+      "timezone, business_hours_json, booking_buffer_minutes, gcal_calendar_id"
+    )
     .eq("id", shopId)
     .single();
 
   if (error || !data) throw new ProviderApiError("Shop not found");
   return data;
+}
+
+function calendarIdFor(shop: { gcal_calendar_id?: string | null }): string {
+  // Falls back to the OAuth user's primary calendar when the shop hasn't
+  // configured a dedicated booking calendar.
+  return shop.gcal_calendar_id || "primary";
 }
 
 function dayName(dateStr: string, tz: string): string {
@@ -161,7 +169,10 @@ export const googleCalendarProvider: IntegrationProvider = {
     const timeMin = open.toISOString();
     const timeMax = close.toISOString();
 
-    const url = new URL("https://www.googleapis.com/calendar/v3/calendars/primary/events");
+    const calendarId = encodeURIComponent(calendarIdFor(shop));
+    const url = new URL(
+      `https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events`
+    );
     url.searchParams.set("timeMin", timeMin);
     url.searchParams.set("timeMax", timeMax);
     url.searchParams.set("singleEvents", "true");
@@ -236,8 +247,9 @@ export const googleCalendarProvider: IntegrationProvider = {
       end: { dateTime: end.toISOString(), timeZone: tz },
     };
 
+    const calendarId = encodeURIComponent(calendarIdFor(shop));
     const res = await fetch(
-      "https://www.googleapis.com/calendar/v3/calendars/primary/events",
+      `https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events`,
       {
         method: "POST",
         headers: {
