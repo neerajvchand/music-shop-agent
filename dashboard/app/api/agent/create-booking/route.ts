@@ -160,13 +160,13 @@ export async function POST(request: NextRequest) {
       service,
     });
 
-    // The Supabase reservation succeeded, so the slot is held; tell the agent
-    // the booking is recorded but flag the sync issue for ops follow-up.
+    // The Supabase reservation succeeded, so the slot is held. The
+    // pending_sync state stays in bookings.status for owner-side dashboard
+    // remediation (Phase 3b) and is intentionally hidden from the agent —
+    // the LLM should never speak "pending sync" or similar to the caller.
     return NextResponse.json({
       success: true,
-      bookingId,
-      pending_sync: true,
-      message: "Booking recorded; calendar sync queued.",
+      booking_id: bookingId,
     });
   }
 }
