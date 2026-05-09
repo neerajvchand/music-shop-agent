@@ -21,18 +21,18 @@ KEEPALIVE_INTERVAL = 5  # seconds
 
 
 def _speak_provider(voice_id: str) -> dict:
-    """Build the speak.provider block. The TTS rate multiplier comes from
-    settings.tts_speech_rate (env: TTS_SPEECH_RATE). Deepgram silently
-    ignores unrecognized fields, so if `rate` ends up in the wrong place
-    this still won't break the connection — the test call will simply
-    sound like the default rate."""
+    """Build the speak.provider block. The TTS speech rate multiplier comes
+    from settings.tts_speech_rate (env: TTS_SPEECH_RATE) and is sent to
+    Deepgram as 'speed' per the Voice Agent API spec. Valid range per the
+    spec is 0.7 to 1.5; values outside this range are sent as-is and
+    Deepgram will return an UNPARSABLE_CLIENT_MESSAGE error if rejected."""
     provider: dict = {
         "type": "deepgram",
         "model": voice_id,
     }
-    rate = getattr(settings, "tts_speech_rate", 1.0)
-    if rate and rate != 1.0:
-        provider["rate"] = float(rate)
+    speed = getattr(settings, "tts_speech_rate", 1.0)
+    if speed and speed != 1.0:
+        provider["speed"] = float(speed)
     return provider
 
 
