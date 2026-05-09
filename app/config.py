@@ -35,10 +35,11 @@ class Settings(BaseSettings):
     # Vercel. Both sides sign `f"{shop_id}:{timestamp_ms}"` with SHA256 hex.
     agent_api_secret: str = ""
 
-    # Multiplier for Deepgram TTS speech rate. 1.0 = default, 1.10 = 10% faster.
-    # Tunable per deploy via the TTS_SPEECH_RATE env var (uppercase env →
-    # lowercase Settings field). Tweak to dial in natural pacing without code
-    # changes. Deepgram silently ignores out-of-range values.
+    # Multiplier for Deepgram TTS speech rate (sent to Deepgram as 'speed' per
+    # the Voice Agent API spec). 1.0 = default, 1.10 = 10% faster, 1.5 = max.
+    # Valid range per Deepgram: 0.7 to 1.5. Values outside this range will
+    # cause Deepgram to reject the settings message with UNPARSABLE_CLIENT_MESSAGE.
+    # Tunable per deploy via the TTS_SPEECH_RATE env var without code changes.
     tts_speech_rate: float = 1.10
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
