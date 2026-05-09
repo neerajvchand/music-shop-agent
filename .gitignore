@@ -53,3 +53,5 @@ htmlcov/
 /dashboard/.env.local
 /dashboard/tsconfig.tsbuildinfo
 
+.vercel
+.env*.local
