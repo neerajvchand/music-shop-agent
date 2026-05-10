@@ -24,11 +24,12 @@ export async function POST(request: NextRequest) {
     notes,
   } = body;
 
-  // Pull settings the validator needs + test_mode + gcal_calendar_id.
+  // Pull settings the validator needs + test_mode + gcal_calendar_id +
+  // vertical_slug (required NOT NULL on bookings inserts since migration 007).
   const supabase = createServiceClient();
   const { data: shopRow, error: shopErr } = await supabase
     .from("shops")
-    .select("timezone, business_hours_json, services_json, booking_buffer_minutes, gcal_calendar_id, test_mode")
+    .select("timezone, business_hours_json, services_json, booking_buffer_minutes, gcal_calendar_id, test_mode, vertical_slug")
     .eq("id", auth.shopId)
     .single();
 
@@ -46,7 +47,34 @@ export async function POST(request: NextRequest) {
     booking_buffer_minutes: number | null;
     gcal_calendar_id: string | null;
     test_mode: boolean | null;
+    vertical_slug: string | null;
   };
+
+  if (!shop.vertical_slug) {
+    return NextResponse.json(
+      {
+        error: "shop_misconfigured",
+        message: "Shop is not assigned to a vertical. Contact support.",
+      },
+      { status: 400 }
+    );
+  }
+
+  // Calendar config check. test_mode shops short-circuit before the Google
+  // write below, so they don't need a calendar configured. For all others, a
+  // missing gcal_calendar_id is a setup gap — return 400 with a message the
+  // agent can read aloud per migration 025's BOOKING EXECUTION recovery flow.
+  if (!shop.test_mode && !shop.gcal_calendar_id) {
+    console.error(`Shop ${auth.shopId} has no gcal_calendar_id configured`);
+    return NextResponse.json(
+      {
+        error: "calendar_not_configured",
+        message:
+          "Calendar is not yet configured for this shop. Connect calendar in Settings.",
+      },
+      { status: 400 }
+    );
+  }
 
   // Defense-in-depth validation. Same shape as the Python validator.
   const validation = validateBookAppointmentArgs(
@@ -70,6 +98,7 @@ export async function POST(request: NextRequest) {
     .from("bookings")
     .insert({
       shop_id: auth.shopId,
+      vertical_slug: shop.vertical_slug,
       service,
       scheduled_at: startTime,
       duration_min: finalDuration,
@@ -148,13 +177,14 @@ export async function POST(request: NextRequest) {
     // TODO(phase-3b): surface pending_sync rows in dashboard "Needs Attention"
     // list with a retry action. For now, leave the booking reserved and mark
     // it pending_sync so it doesn't disappear from the owner's view.
+    const errorMessage = (e?.message || String(e) || "Unknown error").slice(0, 500);
     await supabase
       .from("bookings")
-      .update({ status: "pending_sync" })
+      .update({ status: "pending_sync", error_message: errorMessage })
       .eq("id", bookingId);
 
     await logIntegrationEvent(auth.shopId, "google_calendar", "booking_failed", {
-      error: e?.message || "Unknown error",
+      error: errorMessage,
       booking_id: bookingId,
       start_time: startTime,
       service,
