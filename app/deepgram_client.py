@@ -111,9 +111,15 @@ class DeepgramAgentClient:
         }
 
     def _default_functions(self) -> list[dict]:
+        # client_side: True is set on every entry so the bridge handles each
+        # function locally. Deepgram historically defaults unmarked custom
+        # functions to client-side, but making it explicit guards against
+        # provider behavior changes that would silently route function calls
+        # away from our handler.
         return [
             {
                 "name": "end_call",
+                "client_side": True,
                 "description": "End the phone call after the caller says goodbye or the conversation is complete.",
                 "parameters": {
                     "type": "object",
@@ -132,6 +138,7 @@ class DeepgramAgentClient:
             },
             {
                 "name": "check_availability",
+                "client_side": True,
                 "description": "Check if a proposed appointment time is available. Call this BEFORE offering a specific slot to the caller. Do NOT call this if the caller hasn't given you a service and preferred day yet.",
                 "parameters": {
                     "type": "object",
@@ -145,6 +152,7 @@ class DeepgramAgentClient:
             },
             {
                 "name": "book_appointment",
+                "client_side": True,
                 "description": "Book a confirmed appointment. Only call this after the caller has verbally confirmed ALL details including their name, phone, service, date, and time. This writes to the calendar.",
                 "parameters": {
                     "type": "object",
@@ -161,6 +169,7 @@ class DeepgramAgentClient:
             },
             {
                 "name": "collect_slot",
+                "client_side": True,
                 "description": "Report that a slot value has been extracted from the conversation. Use this to record the caller's answer to a specific question.",
                 "parameters": {
                     "type": "object",
@@ -173,6 +182,7 @@ class DeepgramAgentClient:
             },
             {
                 "name": "confirm_slot",
+                "client_side": True,
                 "description": "Report that the caller has confirmed a slot value (e.g., repeated phone number back correctly).",
                 "parameters": {
                     "type": "object",
@@ -184,6 +194,7 @@ class DeepgramAgentClient:
             },
             {
                 "name": "reject_slot",
+                "client_side": True,
                 "description": "Report that the caller rejected or corrected a slot value. The agent should re-collect it.",
                 "parameters": {
                     "type": "object",
