@@ -280,7 +280,13 @@ async def _twilio_to_deepgram(
             msg = json.loads(raw)
 
             if msg.get("event") == "media":
-                if call_state and not call_state.is_active():
+                # Forward caller audio during ACTIVE_CONVERSATION and AWAITING_FAREWELL.
+                # Only stop in CLOSING. Keeping audio alive during AWAITING_FAREWELL is
+                # required so Deepgram can detect end-of-user-turn (which advances turn
+                # state) and so callers can be heard if they speak during the farewell
+                # window. Dropping audio earlier created a deadlock — see
+                # fix/farewell-deadlock for details.
+                if call_state and call_state.is_closing():
                     continue
                 audio_bytes = decode_twilio_media(msg)
                 await deepgram.send_audio(audio_bytes)
@@ -656,32 +662,44 @@ async def _farewell_safety_watchdog(
     shop: Shop,
     agent_audio_done_event: asyncio.Event,
 ) -> None:
-    """Wait for LLM farewell to finish; inject fallback if safety timeout fires."""
+    """Wait for AWAITING_FAREWELL entry, then immediately inject the configured
+    shop farewell and watchdog its completion. Bridge-driven (eager) instead of
+    waiting for the LLM to spontaneously deliver STEP 2 of migration 022's
+    two-step ending — that path was unreliable because Deepgram won't advance
+    turn state without input audio, creating a deadlock. The shop's configured
+    farewell is also more consistent than LLM-generated text."""
     while not call_state.is_awaiting_farewell():
         if call_state.is_closing():
             logger.info("_farewell_safety_watchdog exiting (reason=state was already closing) (call=%s)", call_state.call_sid)
             return
         await asyncio.sleep(0.2)
 
+    # Defensive: asyncio.Event stays set until cleared, so a stray earlier
+    # AgentAudioDone could otherwise short-circuit the wait below.
+    agent_audio_done_event.clear()
+
+    logger.info("Injecting bridge-driven farewell (call=%s)", call_state.call_sid)
+    try:
+        await deepgram.inject_goodbye(shop.farewell)
+    except Exception as e:
+        # WebSocket may be closed/torn down; nothing to recover. The
+        # GOODBYE_DRAIN_MS sleep in run_bridge will still let any in-flight
+        # audio reach the caller before the sockets fully close.
+        logger.error("inject_goodbye failed: %s (call=%s)", e, call_state.call_sid)
+        return
+
     try:
         await asyncio.wait_for(
             agent_audio_done_event.wait(),
             timeout=FAREWELL_SAFETY_TIMEOUT,
         )
-        logger.info("Farewell completed via LLM (call=%s)", call_state.call_sid)
+        logger.info("Farewell completed via bridge injection (call=%s)", call_state.call_sid)
     except asyncio.TimeoutError:
         logger.warning(
-            "LLM farewell did not complete within %ds — injecting fallback (call=%s)",
+            "Farewell injected but AgentAudioDone not received within %ds — "
+            "proceeding to closing (audio may arrive during drain) (call=%s)",
             FAREWELL_SAFETY_TIMEOUT, call_state.call_sid,
         )
-        await deepgram.inject_goodbye(shop.farewell)
-        try:
-            await asyncio.wait_for(
-                agent_audio_done_event.wait(),
-                timeout=FAREWELL_SAFETY_TIMEOUT,
-            )
-        except asyncio.TimeoutError:
-            logger.error("Even fallback farewell did not complete (call=%s)", call_state.call_sid)
 
 
 async def _silence_watchdog(
