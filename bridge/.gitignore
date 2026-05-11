@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.env
+.env.local
+.env*.local
+*.log
+.DS_Store
+coverage/
+
+# TODO(phase-3): commit package-lock.json. Excluded from Phase 1 only because
+# the session proxy rejected pushes containing it; Railway will regenerate
+# via `npm install` (non-deterministic but acceptable while the service has
+# no production traffic).
+package-lock.json
