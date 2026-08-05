@@ -14,14 +14,16 @@ setlocal EnableExtensions
 ::  notifies the user and performs a TIMED, warned restart to complete the
 ::  upgrade - so the user is never rebooted without warning.
 ::
-::  No other files are required.  Logs: C:\ProgramData\Win11_24H2_Logs
+::  No additional helper scripts are required (the extracted Windows media is
+::  still required).  Logs: C:\ProgramData\Win11_24H2_Logs
 :: ===========================================================================
 
 set "TASK_NAME=Win11_24H2"
 set "LOG_DIR=C:\ProgramData\Win11_24H2_Logs"
 set "LOG_FILE=%LOG_DIR%\RunUpgrade.log"
-:: Seconds of on-screen warning before the restart (300 = 5 minutes).
-set "REBOOT_DELAY=300"
+:: Seconds of on-screen warning before the restart (900 = 15 minutes).
+:: The user can cancel an in-progress countdown with:  shutdown /a
+set "REBOOT_DELAY=900"
 :: Windows Setup switches. NOTE: /dynamicupdate enable pulls Microsoft's
 :: compatibility/SafeOS fixes during the upgrade and reduces rollbacks; change
 :: to "disable" only for offline machines.
@@ -154,8 +156,9 @@ echo =====================================================
 echo  - Setup is running silently as SYSTEM.
 echo  - The user was told to save their work.
 echo  - When Setup finishes preparing, the user gets a notification
-echo    and the PC restarts on a timed %REBOOT_DELAY%-second warning to complete.
-echo  - You may disconnect. Total time is about 30-45 minutes.
+echo    and the PC restarts on a timed ~15-minute warning to complete.
+echo  - Only a verified-successful preparation triggers the restart.
+echo  - You may disconnect. The upgrade may take one or more hours.
 echo.
 echo  Check progress:  tasklist ^| findstr /i "setup setuphost setupprep"
 echo  Log file:        %LOG_FILE%
@@ -167,49 +170,31 @@ exit /b 0
 ::  RUNSETUP  -  worker, launched by the Scheduled Task as SYSTEM
 :: ==========================================================================
 :RUNSETUP
-echo [%DATE% %TIME%] Worker started (SYSTEM). Launching Windows Setup.>>"%LOG_FILE%"
+echo [%DATE% %TIME%] Worker started (SYSTEM). Running Windows Setup (synchronous).>>"%LOG_FILE%"
 
-:: Launch Setup (non-blocking); we watch the processes to know when it's done.
-start "" "%MEDIA_DIR%\setup.exe" %SETUP_SWITCHES%
+:: Run Setup and WAIT for it to finish the down-level phase, then capture the
+:: REAL return code. The reboot is gated on this code - never on "processes
+:: gone" or "Panther folder exists" (a leftover Panther folder from a prior
+:: failed attempt is NOT proof of success).
+"%MEDIA_DIR%\setup.exe" %SETUP_SWITCHES%
+set "SETUP_RC=%errorlevel%"
+echo [%DATE% %TIME%] Windows Setup down-level phase returned code %SETUP_RC%.>>"%LOG_FILE%"
 
-:: Phase A - wait up to 5 minutes for Setup to appear.
-set /a WA=0
-:WORKER_APPEAR
-ping -n 16 127.0.0.1 >nul
-tasklist | findstr /i "setup.exe setupprep.exe SetupHost.exe" >nul
-if not errorlevel 1 goto WORKER_RUNNING
-set /a WA+=15
-if %WA% LSS 300 goto WORKER_APPEAR
-echo [%DATE% %TIME%] ERROR: Setup never started; no reboot performed.>>"%LOG_FILE%"
-goto WORKER_END
-
-:WORKER_RUNNING
-echo [%DATE% %TIME%] Setup running; waiting for the preparation phase to complete.>>"%LOG_FILE%"
-
-:: Phase B - wait up to 2 hours for Setup to finish the down-level phase.
-set /a WB=0
-:WORKER_WAIT
-ping -n 31 127.0.0.1 >nul
-tasklist | findstr /i "setup.exe setupprep.exe SetupHost.exe" >nul
-if errorlevel 1 goto WORKER_DONE
-set /a WB+=30
-if %WB% LSS 7200 goto WORKER_WAIT
-echo [%DATE% %TIME%] WARNING: Setup still running after 2h; no timed reboot issued.>>"%LOG_FILE%"
-goto WORKER_END
-
-:WORKER_DONE
-:: Only reboot if the upgrade actually staged (guards against a failed prep).
-if not exist "C:\$WINDOWS.~BT\Sources\Panther" (
-    echo [%DATE% %TIME%] ERROR: Setup ended but upgrade not staged; machine left unchanged. No reboot.>>"%LOG_FILE%"
+:: Reboot ONLY on a verified success (exit code 0). Any other code means Setup
+:: did not complete the down-level phase - leave the machine on its current
+:: build and do NOT reboot.
+if not "%SETUP_RC%"=="0" (
+    echo [%DATE% %TIME%] ERROR: Setup did not report success ^(code %SETUP_RC%^). Machine left unchanged; NO reboot. See logs in %LOG_DIR%\Panther.>>"%LOG_FILE%"
+    msg * /time:120 "The Windows 11 update could not be completed and your computer was left unchanged. You can keep working. Please contact IT support." 2>nul
     goto WORKER_END
 )
 
-echo [%DATE% %TIME%] Down-level complete. Notifying user and scheduling timed restart.>>"%LOG_FILE%"
-msg * /time:180 "Windows 11 24H2 is ready to finish installing. Your computer will restart in about 5 minutes. Please save your work now." 2>nul
+echo [%DATE% %TIME%] Down-level completed successfully. Notifying user and scheduling timed restart.>>"%LOG_FILE%"
+msg * /time:180 "Windows 11 24H2 is ready to finish installing. Your computer will restart in about 15 minutes. Please save your work now." 2>nul
 shutdown /r /t %REBOOT_DELAY% /c "Windows 11 24H2 upgrade: your PC will restart to finish installing. Please save your work." >nul 2>&1
 echo [%DATE% %TIME%] Timed restart scheduled (%REBOOT_DELAY%s). Upgrade will complete after reboot.>>"%LOG_FILE%"
 
 :WORKER_END
-:: Clean up the one-shot task (does not cancel the scheduled restart).
+:: Clean up the one-shot task (does not cancel any scheduled restart).
 schtasks /Delete /TN "%TASK_NAME%" /F >nul 2>&1
-exit /b 0
+exit /b %SETUP_RC%
