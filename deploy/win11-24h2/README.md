@@ -1,11 +1,18 @@
 # Windows 11 24H2 Upgrade Launcher
 
-A seamless, one-click in-place upgrade from Windows 11 23H2 to 24H2, designed
-for an ISS to run during a remote session and for the end user to be kept
-informed. Keeps the proven **"run Setup as SYSTEM via Task Scheduler"** design
-so the upgrade survives the ISS disconnecting, and adds pre-flight safety
-checks, a user notification, a warned reboot, and automatic success/rollback
-verification.
+A seamless in-place upgrade from Windows 11 23H2 to 24H2 that runs **attended**
+(a tech double-clicks) or **unattended** (KACE Managed Installation / scheduled
+job). Keeps the proven **"run Setup as SYSTEM via Task Scheduler"** design so
+the upgrade survives a tech disconnecting, and adds pre-flight safety checks, a
+user notification, an active-hours-aware warned reboot, automatic
+success/**rollback** verification with **SetupDiag** analysis, and
+**fleet-reportable status** in the registry.
+
+> **Companion docs**
+> - **`DEPLOYMENT.md`** — scaling to local + remote users via KACE (alternate
+>   download / WUfB), and fleet reporting with a Custom Inventory Rule.
+> - **`ROLLBACK-RUNBOOK.md`** — fixing the "rolls back after first reboot"
+>   blocker (dynamic update, Dell drivers, Zscaler, SetupDiag).
 
 ---
 
@@ -23,20 +30,29 @@ worker/verifier go to `C:\ProgramData\Win11_24H2_Logs\`.
 
 ---
 
-## ISS Steps (the short version)
+## How to run it
 
-1. Copy and extract the approved Windows 11 24H2 ISO to a **local** folder,
-   e.g. `C:\Temp\Win1124H2`. (Local, not a network/mapped path — the SYSTEM
-   account must be able to read it.)
-2. Copy the four files above into that same folder (next to `setup.exe`).
-3. **Double-click `RunUpgrade.cmd`** and approve the UAC prompt.
-   *(No need to open an admin prompt or `cd` anywhere.)*
-4. Watch for **`RESULT: UPGRADE STARTED`**.
-5. Tell the user it's running in the background and the PC will restart on its
-   own to finish (~30–45 min total). Then disconnect.
+**Attended (tech, one machine):**
 
-That's it. The user gets an on-screen notice up front and a **~5-minute
-warning before the restart**, so nobody is surprised.
+1. Extract the approved 24H2 ISO to a **local** folder, e.g. `C:\Temp\Win1124H2`
+   (local, not a mapped/network path — SYSTEM must read it).
+2. Copy the launcher files there, next to `setup.exe`. *(Optional: drop
+   `SetupDiag.exe` in a `tools\` subfolder to enable automatic rollback
+   analysis.)*
+3. **Double-click `RunUpgrade.cmd`** and approve UAC. *(No admin prompt / `cd`.)*
+4. Watch for **`RESULT: UPGRADE STARTED`**, tell the user, and disconnect.
+
+The user gets an on-screen notice up front and a warning before the restart.
+
+**Unattended (KACE Managed Installation / scheduled job):**
+
+```
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File RunUpgrade.ps1 -Unattended
+```
+
+Auto-detects the non-interactive session, suppresses all prompts, defers the
+restart until **after active hours**, and reports state to the registry. Full
+local + remote rollout guidance is in **`DEPLOYMENT.md`**.
 
 ---
 
@@ -55,6 +71,10 @@ The original was solid; these changes close the gaps that broke "seamless":
 | **AC-power pre-check** | Blocks risky battery-only upgrades on laptops (override with `-AllowOnBattery`). |
 | **Pending-reboot pre-check** | Warns (or blocks) when a prior update would make Setup fail. |
 | **Setup log collection** | Panther logs are gathered automatically on failure/rollback for diagnosis. |
+| **Unattended / KACE mode** | Same scripts run as a Managed Installation with no prompts — one payload for attended and unattended. |
+| **Active-hours-aware reboot** | Unattended runs defer the restart until after hours so users aren't interrupted mid-day. |
+| **SetupDiag on rollback** | The failing rule/driver is captured automatically instead of hand-read from `setuperr.log`. |
+| **Fleet reporting** | Outcome written to `HKLM\SOFTWARE\Win11_24H2_Upgrade` for a KACE Custom Inventory Rule + Smart Labels. |
 | **Structured logging** | Clear `INFO/WARN/ERROR/OK` lines across `RunUpgrade.log`, `Setup_Worker.log`, `Verify.log`. |
 
 ---
@@ -66,9 +86,12 @@ want a permanent change):
 
 | Parameter | Default | Notes |
 |-----------|---------|-------|
+| `-Unattended` | auto | Force unattended mode (auto-detected when there's no interactive desktop). |
+| `-RebootPolicy` | `afterhours` (unattended) / `countdown` (attended) | `afterhours` waits for `ActiveHoursEnd`; `countdown` warns then restarts. |
+| `-ActiveHoursStart` / `-ActiveHoursEnd` | `8` / `18` | Hours the user is considered "working"; restart is held until after. |
+| `-RebootCountdownSeconds` | `300` | Countdown warning (when `RebootPolicy = countdown`). |
+| `-DynamicUpdate` | `enable` | `enable` pulls Setup/compat/SafeOS fixes (fewer rollbacks, needs internet). `disable` only for offline. See runbook. |
 | `-MinFreeGB` | `25` | Required free space on the system drive. |
-| `-RebootCountdownSeconds` | `300` | User-visible warning before the restart. |
-| `-DynamicUpdate` | `enable` | `enable` pulls Setup/compat fixes during the upgrade (fewer rollbacks, needs internet). Use `disable` only for offline/air-gapped runs. |
 | `-AllowOnBattery` | off | Permit the upgrade on battery power. |
 | `-BlockOnPendingReboot` | off | Make a pending reboot a hard stop instead of a warning. |
 
@@ -82,10 +105,14 @@ tasklist | findstr /i "setup setuphost setupprep"
 
 :: What version did it land on?
 reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion" /v DisplayVersion
+
+:: Recorded outcome: Success / Rollback / InProgress / Failed (+ cause)
+reg query "HKLM\SOFTWARE\Win11_24H2_Upgrade"
 ```
 
 Logs: `C:\ProgramData\Win11_24H2_Logs\` (`RunUpgrade.log`, `Setup_Worker.log`,
-`Verify.log`, plus any collected `SetupLogs_*` / `RollbackLogs_*` folders).
+`Verify.log`, plus any collected `SetupLogs_*` / `RollbackLogs_*` folders with
+`SetupDiagResults.log`).
 
 ---
 
