@@ -27,7 +27,7 @@ set "REBOOT_DELAY=900"
 :: Windows Setup switches. NOTE: /dynamicupdate enable pulls Microsoft's
 :: compatibility/SafeOS fixes during the upgrade and reduces rollbacks; change
 :: to "disable" only for offline machines.
-set "SETUP_SWITCHES=/auto upgrade /quiet /eula accept /compat ignorewarning /showoobe none /noreboot /copylogs "%LOG_DIR%\Panther" /dynamicupdate enable"
+set "SETUP_SWITCHES=/auto upgrade /quiet /eula accept /compat ignorewarning /showoobe none /noreboot /copylogs %LOG_DIR%\Panther /dynamicupdate enable"
 
 for %%I in ("%~dp0.") do set "MEDIA_DIR=%%~fI"
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%" >nul 2>&1
